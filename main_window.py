@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _create_left_toolbar(self):
-        self.left_toolbar = LayerSidebar()
+        self.left_toolbar = LayerSidebar(self.db)
         self.left_toolbar.layerChanged.connect(self.layer_changed)
         self.left_toolbar.labelChanged.connect(self.label_changed)
         self.left_toolbar.toolChanged.connect(self.tool_changed)

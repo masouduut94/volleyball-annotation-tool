@@ -19,7 +19,7 @@ class LayerSidebar(QWidget):
     toolChanged = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, db, parent=None):
         super().__init__(parent)
 
         self.setFixedWidth(260)
@@ -30,26 +30,15 @@ class LayerSidebar(QWidget):
 
         self.layer_rows = {}
         self.label_buttons = {}
+        self.db = db
+        layers = self.db.get_layers()
 
         self.layer_labels = {
-            "court": [
-                    ("net", "#4927F5"),
-                    ("attack zone", "#128DE5"),
-                    ("back zone", "#FFD814"),
-                ],
-                "players": [
-                    ("player", "#27D3F5"),
-                    ("libero", "#B027F5"),
-                ],
-                "ball": [
-                    ("ball", "#6CF527"),
-                ],
-                "actions": [
-                    ("spike", "#F5276C"),
-                    ("block", "#F5B027"),
-                    ("set", "#F54927"),
-                    ("receive", "#FFAA00"),
-                ],
+            layer.name: [
+                (label.name, label.color)
+                for label in layer.labels
+            ]
+            for layer in layers
         }
 
         self._build_ui()
@@ -350,10 +339,10 @@ class LayerSidebar(QWidget):
         self.toolChanged.emit(tool)
 
 
-
 class LayerRow(QWidget):
     clicked = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
+
     # lockChanged = pyqtSignal(str, bool)
 
     def __init__(self, layer_name):
