@@ -273,13 +273,15 @@ class LayerSidebar(QWidget):
 
         layout.addStretch()
 
-    def separator(self):
+    @staticmethod
+    def separator():
         line = QFrame()
         line.setObjectName("line")
         line.setFrameShape(QFrame.Shape.HLine)
         return line
 
-    def section(self, text):
+    @staticmethod
+    def section(text):
         label = QLabel(text)
         label.setObjectName("section")
         return label

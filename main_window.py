@@ -1,8 +1,7 @@
-from typing import Optional, Dict
+from typing import Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,

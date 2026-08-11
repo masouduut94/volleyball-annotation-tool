@@ -117,9 +117,6 @@ class AnnotationScene(QGraphicsScene):
         self.current_label = label
         self.current_color = color
 
-    def set_available_labels(self, labels: dict):
-        self.available_labels = labels
-
     # ---------------------------------------------------------
     # Mouse
     # ---------------------------------------------------------
@@ -276,6 +273,7 @@ class AnnotationScene(QGraphicsScene):
             return
 
         item = AnnotationRectItem(rect, self.current_color, self.current_label)
+        item.set_layer(self.current_layer)
         self.addItem(item)
 
         self.layer_items[self.current_layer].append(
@@ -348,6 +346,7 @@ class AnnotationScene(QGraphicsScene):
             self.current_color,
             self.current_label
         )
+        item.set_layer(self.current_layer)
         self.addItem(item)
 
         self.layer_items[self.current_layer].append(
@@ -627,6 +626,13 @@ class AnnotationScene(QGraphicsScene):
             for mask, cls in zip(result.masks.xy, result.boxes.cls):
                 name = result.names[int(cls)].lower()
 
+                # Some models (like original yolov8m.pt has 80 classes and one of them is person. we
+                # use this model to detect/annotate volleyball players for the time being. This
+                # section of the code is hardcoded for the fix.
+                if layer.name == 'players':
+                    if name == 'person':
+                        name = 'player'
+
                 if name not in layer_labels:
                     continue
 
@@ -667,6 +673,12 @@ class AnnotationScene(QGraphicsScene):
                 cls = int(box.cls[0])
 
                 name = result.names[cls].lower()
+                # Some models (like original yolov8m.pt has 80 classes and one of them is person. we
+                # use this model to detect/annotate volleyball players for the time being. This
+                # section of the code is hardcoded for the fix.
+                if layer.name == 'players':
+                    if name == 'person':
+                        name = 'player'
 
                 if name not in layer_labels:
                     continue
