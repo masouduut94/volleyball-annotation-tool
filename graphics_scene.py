@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import (
     QMenu, QMessageBox,
 )
 
-from annotation_items import AnnotationRectItem, AnnotationPolygonItem
+from shape_utils import AnnotationRectItem, AnnotationPolygonItem
+from database.db import DatabaseManager
+from vb_gui.vb_annotator.database.data import Layer, Label, Annotation
 
 
 class ToolMode:
@@ -28,8 +30,9 @@ class ToolMode:
 class AnnotationScene(QGraphicsScene):
     annotation_changed = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
+        self.db = db
 
         self.setSceneRect(0, 0, 960, 540)
 
@@ -37,17 +40,20 @@ class AnnotationScene(QGraphicsScene):
         self.hovered_item = None
         self.tool_mode = ToolMode.RECTANGLE
 
-        self.current_label = "court"
+        self.current_layer = "court"
+        self.current_label = "net"
         self.current_color = "#00FF00"
 
-        self.available_labels = {
-            "court": "#00FF00",
-            "net": "#00AAFF",
-        }
+        self.layer_labels = self.fetch_db_layers()
 
         self.image_item: Optional[QGraphicsPixmapItem] = None
 
-        self.items_data: List[dict] = []
+        self.layer_items = {
+            "court": [],
+            "players": [],
+            "ball": [],
+            "actions": [],
+        }
 
         # rectangle drawing
         self.start_pos: Optional[QPointF] = None
@@ -68,12 +74,28 @@ class AnnotationScene(QGraphicsScene):
     # Image
     # ---------------------------------------------------------
 
+    def fetch_db_layers(self) -> Dict[str, List[Label]]:
+        """
+
+        Returns: A dictionary of layer_names mapped to its related labels
+
+        """
+        layers = self.db.get_layers()
+        return {layer.name: layer.labels for layer in layers}
+
+    def set_layer_labels(self, layer_name: str, labels: List[Label]):
+        self.layer_labels[layer_name] = labels
+
+    def set_current_layer(self, layer_name):
+        self.current_layer = layer_name
+
     def set_image(self, pixmap):
         self.clear()
 
-        self.items_data.clear()
-        self.cancel_polygon()
+        for key, _ in self.layer_items.items():
+            self.layer_items[key].clear()
 
+        self.cancel_polygon()
         self.image_item = self.addPixmap(pixmap)
         self.image_item.setZValue(-100)
 
@@ -235,6 +257,10 @@ class AnnotationScene(QGraphicsScene):
             self.current_color,
             self.current_label,
         )
+        self.temp_rect.set_layer(
+            self.current_layer,
+        )
+
         self.addItem(self.temp_rect)
 
     def finish_rectangle(self):
@@ -252,7 +278,7 @@ class AnnotationScene(QGraphicsScene):
         item = AnnotationRectItem(rect, self.current_color, self.current_label)
         self.addItem(item)
 
-        self.items_data.append(
+        self.layer_items[self.current_layer].append(
             {
                 "item": item,
                 "type": "rectangle",
@@ -286,8 +312,8 @@ class AnnotationScene(QGraphicsScene):
         self.polygon_points.append(pos)
 
         vertex = self.addEllipse(
-            pos.x()-1,
-            pos.y()-1,
+            pos.x() - 1,
+            pos.y() - 1,
             2,
             2,
             QPen(Qt.GlobalColor.white, 1),
@@ -324,7 +350,7 @@ class AnnotationScene(QGraphicsScene):
         )
         self.addItem(item)
 
-        self.items_data.append(
+        self.layer_items[self.current_layer].append(
             {
                 "item": item,
                 "type": "polygon",
@@ -363,7 +389,6 @@ class AnnotationScene(QGraphicsScene):
         if self.hovered_item == item:
             self.hovered_item = None
 
-
     # ---------------------------------------------------------
     # Context menu
     # ---------------------------------------------------------
@@ -378,10 +403,17 @@ class AnnotationScene(QGraphicsScene):
             return
 
         target = None
+        layer_name = None
 
-        for record in self.items_data:
-            if record["item"] == item:
-                target = record
+        # Find the annotation record and its layer
+        for layer, records in self.layer_items.items():
+            for record in records:
+                if record["item"] == item:
+                    target = record
+                    layer_name = layer
+                    break
+
+            if target is not None:
                 break
 
         if target is None:
@@ -389,15 +421,23 @@ class AnnotationScene(QGraphicsScene):
 
         menu = QMenu()
 
-        for label, color in self.available_labels.items():
-            action = QAction(label, menu)
+        # Only show labels that belong to the clicked layer
+        labels = self.layer_labels.get(layer_name)
+
+        for label in labels:
+            action = QAction(label.name, menu)
+
             action.triggered.connect(
-                lambda checked=False, l=label, c=color: self.change_label(
-                    target,
+                lambda checked=False,
+                       l=label.name,
+                       c=label.color,
+                       t=target: self.change_label(
+                    t,
                     l,
                     c,
                 )
             )
+
             menu.addAction(action)
 
         menu.exec(event.screenPos())
@@ -417,80 +457,92 @@ class AnnotationScene(QGraphicsScene):
         if self.hovered_item is None:
             return
 
+        layer = self.hovered_item.layer_name
+
         remaining = []
 
-        for record in self.items_data:
+        for record in self.layer_items[layer]:
             if record["item"] == self.hovered_item:
                 self.removeItem(record["item"])
             else:
                 remaining.append(record)
 
-        self.items_data = remaining
+        self.layer_items[layer] = remaining
+
         self.hovered_item = None
 
         self.annotation_changed.emit()
 
-    def clear_annotations(self):
-        for record in self.items_data:
-            self.removeItem(record["item"])
+    def clear_annotations(self, layer_name=None):
+        if layer_name is None:
+            for records in self.layer_items.values():
+                for record in records:
+                    self.removeItem(record["item"])
 
-        self.items_data.clear()
+            for key in self.layer_items:
+                self.layer_items[key] = []
+
+        else:
+            records = self.layer_items.get(layer_name, [])
+
+            for record in records:
+                self.removeItem(record["item"])
+
+            self.layer_items[layer_name] = []
+
         self.cancel_polygon()
 
         self.annotation_changed.emit()
 
-    def export_annotations(self):
+    def export_annotations(self, layer_name, path, frame_number):
         annotations = []
 
-        for record in self.items_data:
+        for record in self.layer_items.get(layer_name, []):
             item = record["item"]
 
             if record["type"] == "rectangle":
                 rect = item.sceneBoundingRect()
-
-                annotations.append(
-                    {
-                        "type": "rectangle",
-                        "label": record["label"],
-                        "geometry": {
-                            "x": rect.x() * self.scale_x,
-                            "y": rect.y() * self.scale_y,
-                            "width": rect.width() * self.scale_x,
-                            "height": rect.height() * self.scale_y,
-                        },
-                    }
-                )
-
-            elif record["type"] == "polygon":
+                geometry = {
+                    "x": rect.x() * self.scale_x,
+                    "y": rect.y() * self.scale_y,
+                    "width": rect.width() * self.scale_x,
+                    "height": rect.height() * self.scale_y,
+                }
+            else:
                 poly = item.mapToScene(item.polygon())
+                geometry = [
+                    [
+                        p.x() * self.scale_x,
+                        p.y() * self.scale_y,
+                    ]
+                    for p in poly
+                ]
 
-                annotations.append(
-                    {
-                        "type": "polygon",
-                        "label": record["label"],
-                        "geometry": [
-                            [
-                                p.x() * self.scale_x,
-                                p.y() * self.scale_y,
-                            ]
-                            for p in poly
-                        ],
-                    }
+            layer = self.db.get_layer(layer_name)
+            labels = {label.name: label for label in layer.labels}
+            annotations.append(
+                Annotation(
+                    media_name=path,
+                    layer=layer,
+                    label=labels[record['label']],
+                    frame_number=frame_number,
+                    shape_type=record['type'],
+                    geometry=geometry
                 )
+            )
 
         return annotations
 
-    def load_annotations(self, annotations: List[dict]):
-        self.clear_annotations()
-
+    def load_annotations(
+            self,
+            annotations: List[Annotation],
+            layer_name: str,
+    ):
         for ann in annotations:
-            color = self.available_labels.get(
-                ann["label"],
-                "#00FF00",
-            )
+            color = ann.label.color if ann.label.color is not None else "#00FF00"
 
-            if ann["type"] == "rectangle":
-                g = ann["geometry"]
+            if ann.shape_type == "rectangle":
+                g = ann.geometry
 
                 rect = QRectF(
                     g["x"] / self.scale_x,
@@ -499,90 +551,86 @@ class AnnotationScene(QGraphicsScene):
                     g["height"] / self.scale_y,
                 )
 
-                item = AnnotationRectItem(rect, color)
-                self.addItem(item)
+                item = AnnotationRectItem(rect, color, ann.label.name)
 
-                self.items_data.append(
-                    {
-                        "item": item,
-                        "type": "rectangle",
-                        "label": ann["label"],
-                        "color": color,
-                    }
-                )
-
-            elif ann["type"] == "polygon":
+            elif ann.shape_type == "polygon":
                 polygon = QPolygonF(
                     [
                         QPointF(
                             x / self.scale_x,
                             y / self.scale_y,
                         )
-                        for x, y in ann["geometry"]
+                        for x, y in ann.geometry
                     ]
                 )
 
-                item = AnnotationPolygonItem(polygon, color, ann["label"])
-                self.addItem(item)
+                item = AnnotationPolygonItem(polygon, color, ann.label.name)
 
-                self.items_data.append(
-                    {
-                        "item": item,
-                        "type": "polygon",
-                        "label": ann["label"],
-                        "color": color,
-                    }
-                )
+            else:
+                continue
 
-        self.annotation_changed.emit()
+            # --------------------------------------------------
+            # Layer information
+            # --------------------------------------------------
+
+            item.layer_name = ann.layer.name
+
+            # --------------------------------------------------
+            # Z order
+            # --------------------------------------------------
+
+            z_values = {
+                "court": 0,
+                "players": 10,
+                "ball": 20,
+                "actions": 30,
+            }
+
+            item.setZValue(
+                z_values.get(layer_name, 0)
+            )
+
+            self.addItem(item)
+
+            self.layer_items[self.current_layer].append(
+                {
+                    "item": item,
+                    "type": ann.shape_type,
+                    "label": ann.label.name,
+                    "color": color,
+                    "layer": ann.layer.name,
+                }
+            )
 
     def import_yolo_result(
             self,
             result,
-            job_labels,
-            original_width,
-            original_height,
+            layer: Layer,
+            original_width: int,
+            original_height: int,
     ):
         sx = self.display_width / original_width
         sy = self.display_height / original_height
 
-        # Detection boxes
-        if result.boxes is not None:
-            for box in result.boxes:
-                cls = int(box.cls[0])
-                name = result.names[cls].lower()
+        layer_labels: Dict[str, Label] = {
+            label.name.lower(): label
+            for label in layer.labels
+        }
 
-                if name not in job_labels:
-                    continue
+        imported = 0
 
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-
-                rect = QRectF(
-                    x1 * sx,
-                    y1 * sy,
-                    (x2 - x1) * sx,
-                    (y2 - y1) * sy,
-                )
-
-                item = AnnotationRectItem(rect, job_labels[name].color, job_labels[name].name)
-                self.addItem(item)
-
-                self.items_data.append(
-                    {
-                        "item": item,
-                        "type": "rectangle",
-                        "label": job_labels[name].name,
-                        "color": job_labels[name].color,
-                    }
-                )
-
+        # --------------------------------------------------
         # Segmentation masks
+        # --------------------------------------------------
+
         if result.masks is not None:
             for mask, cls in zip(result.masks.xy, result.boxes.cls):
                 name = result.names[int(cls)].lower()
 
-                if name not in job_labels:
+                if name not in layer_labels:
                     continue
+
+                label = layer_labels[name]
 
                 points = [
                     QPointF(x * sx, y * sy)
@@ -593,19 +641,69 @@ class AnnotationScene(QGraphicsScene):
 
                 item = AnnotationPolygonItem(
                     polygon,
-                    job_labels[name].color,
-                    job_labels[name].name
+                    label.color,
+                    label.name,
                 )
 
+                item.layer_name = layer.name
                 self.addItem(item)
 
-                self.items_data.append(
+                self.layer_items[self.current_layer].append(
                     {
                         "item": item,
                         "type": "polygon",
-                        "label": job_labels[name].name,
-                        "color": job_labels[name].color,
+                        "label": label.name,
+                        "color": label.color,
+                        "layer": layer.name,
+                    }
+                )
+            imported += 1
+        # --------------------------------------------------
+        # Detection boxes
+        # --------------------------------------------------
+
+        elif result.boxes is not None:
+            for box in result.boxes:
+                cls = int(box.cls[0])
+
+                name = result.names[cls].lower()
+
+                if name not in layer_labels:
+                    continue
+
+                label = layer_labels[name]
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+
+                rect = QRectF(
+                    x1 * sx,
+                    y1 * sy,
+                    (x2 - x1) * sx,
+                    (y2 - y1) * sy,
+                )
+
+                item = AnnotationRectItem(
+                    rect,
+                    label.color,
+                    label.name,
+                )
+
+                item.layer_name = layer.name
+
+                self.addItem(item)
+
+                self.layer_items[self.current_layer].append(
+                    {
+                        "item": item,
+                        "type": "rectangle",
+                        "label": label.name,
+                        "color": label.color,
+                        "layer": layer.name,
                     }
                 )
 
+                imported += 1
+
         self.annotation_changed.emit()
+
+        return imported

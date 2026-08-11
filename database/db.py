@@ -1,11 +1,47 @@
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
-
+from sqlalchemy.exc import IntegrityError
+from typing import List, Optional, Dict, Tuple
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, joinedload, selectinload
+from sqlalchemy import func
 
-from .schema import Base, Job, Label, Media, Annotation, ModelConfig
+from .schema import (
+    Base,
+    Layer as SQLALayer,
+    LayerLabel,
+    Media,
+    Annotation as SQLAAnnotation,
+    ModelConfig,
+)
+from .data import Label, Layer, Annotation
+
+
+def annotation_key(ann: Annotation):
+    return (
+        ann.media_name,
+        ann.layer.layer_id,
+        ann.frame_number,
+        ann.label.label_id,
+        ann.shape_type,
+        json.dumps(ann.geometry, sort_keys=True),
+    )
+
+
+def remove_duplicate_annotations(
+        annotations: list[Annotation],
+) -> list[Annotation]:
+    seen = set()
+    unique = []
+
+    for ann in annotations:
+        key = annotation_key(ann)
+        if key not in seen:
+            seen.add(key)
+            unique.append(ann)
+
+    return unique
 
 
 class DatabaseManager:
@@ -28,96 +64,106 @@ class DatabaseManager:
         self._create_default_data()
 
     # ------------------------------------------------------------------
-    # Default data
+    # Default volleyball layers
     # ------------------------------------------------------------------
 
     def _create_default_data(self):
         with self.Session() as session:
-            if session.query(Job).count() == 0:
-                job = Job(name="Court")
+            if session.query(SQLALayer).count() > 0:
+                return
 
-                job.labels = [
-                    Label(name="court", color="#00FF00"),
-                    Label(name="net", color="#00AAFF"),
+            layers = {
+                "court": [
+                    ("net", "#4927F5"),
+                    ("attack zone", "#128DE5"),
+                    ("back zone", "#FFD814"),
+                ],
+                "players": [
+                    ("player", "#27D3F5"),
+                    ("libero", "#B027F5"),
+                ],
+                "ball": [
+                    ("ball", "#6CF527"),
+                ],
+                "actions": [
+                    ("spike", "#F5276C"),
+                    ("block", "#F5B027"),
+                    ("set", "#F54927"),
+                    ("receive", "#FFAA00"),
+                ],
+            }
+
+            for layer_name, labels in layers.items():
+                layer = SQLALayer(name=layer_name)
+
+                layer.labels = [
+                    LayerLabel(
+                        name=name,
+                        color=color,
+                    )
+                    for name, color in labels
                 ]
 
-                session.add(job)
-                session.commit()
+                session.add(layer)
 
-    # ------------------------------------------------------------------
-    # Jobs
-    # ------------------------------------------------------------------
-
-    def get_jobs(self) -> List[Job]:
-        with self.Session() as session:
-            return session.query(Job).order_by(Job.name).all()
-
-    def add_job(self, name: str) -> Job:
-        with self.Session() as session:
-            job = Job(name=name)
-            session.add(job)
             session.commit()
-            session.refresh(job)
-            return job
-
-    def remove_job(self, job_id: int):
-        with self.Session() as session:
-            job = session.get(Job, job_id)
-            if job:
-                session.delete(job)
-                session.commit()
 
     # ------------------------------------------------------------------
-    # Labels
+    # Layers - Updated to return dataclasses
     # ------------------------------------------------------------------
 
-    def get_labels(self, job_id: int) -> List[Label]:
+    def get_layers(self) -> List[Layer]:
+        """Get all layers with their labels pre-loaded."""
         with self.Session() as session:
-            return (
-                session.query(Label)
-                .filter(Label.job_id == job_id)
-                .order_by(Label.name)
-                .all()
+            layers = session.query(SQLALayer).options(
+                selectinload(SQLALayer.labels)
+            ).all()
+
+            return [
+                Layer(
+                    layer_id=layer.id,
+                    name=layer.name,
+                    labels=[
+                        Label(
+                            name=label.name,
+                            color=label.color,
+                            layer=layer.name,
+                            label_id=label.id
+                        )
+                        for label in layer.labels
+                    ]
+                )
+                for layer in layers
+            ]
+
+    def get_layer(self, layer_name: str) -> Layer:
+        with self.Session() as session:
+            layer = (
+                session.query(SQLALayer)
+                .options(selectinload(SQLALayer.labels))
+                .filter(SQLALayer.name == layer_name)
+                .first()
             )
 
-    def add_label(self, job_id: int, name: str, color: str) -> Label:
-        with self.Session() as session:
-            label = Label(
-                job_id=job_id,
-                name=name,
-                color=color,
+            return Layer(
+                layer_id=layer.id,
+                name=layer.name,
+                labels=[
+                    Label(
+                        name=label.name,
+                        color=label.color,
+                        layer=layer.name,
+                        label_id=label.id
+                    )
+                    for label in layer.labels
+                ]
             )
-
-            session.add(label)
-            session.commit()
-            session.refresh(label)
-            return label
-
-    def update_label_color(self, label_id: int, color: str):
-        with self.Session() as session:
-            label = session.get(Label, label_id)
-            if label:
-                label.color = color
-                session.commit()
-
-    def remove_label(self, label_id: int):
-        with self.Session() as session:
-            label = session.get(Label, label_id)
-            if label:
-                session.delete(label)
-                session.commit()
 
     # ------------------------------------------------------------------
     # Media
     # ------------------------------------------------------------------
 
-    def get_or_create_media(
-            self,
-            path: str,
-            media_type: str,
-            width: int,
-            height: int,
-    ) -> Media:
+    def get_or_create_media(self, path: str, media_type: str, width: int, height: int) -> Media:
         with self.Session() as session:
             media = (
                 session.query(Media)
@@ -138,10 +184,19 @@ class DatabaseManager:
             session.add(media)
             session.commit()
             session.refresh(media)
+
             return media
 
+    def get_media(self, path: str) -> Optional[Media]:
+        with self.Session() as session:
+            return session.query(Media).filter(Media.path == path).first()
+
+    def get_all_media(self) -> List[Media]:
+        with self.Session() as session:
+            return session.query(Media).order_by(Media.created_at.desc()).all()
+
     # ------------------------------------------------------------------
-    # Annotations
+    # Annotations - Updated with dataclass support.
     # ------------------------------------------------------------------
 
     def save_annotations(
@@ -150,10 +205,13 @@ class DatabaseManager:
             media_type: str,
             width: int,
             height: int,
-            job_id: int,
+            layer: Layer,
             frame_number: Optional[int],
-            annotations: List[dict],
+            annotations: List[Annotation],
     ):
+
+        annotations = remove_duplicate_annotations(annotations)
+
         with self.Session() as session:
             media = (
                 session.query(Media)
@@ -172,32 +230,31 @@ class DatabaseManager:
                 session.commit()
                 session.refresh(media)
 
-            session.query(Annotation).filter(
-                Annotation.media_id == media.id,
-                Annotation.job_id == job_id,
-                Annotation.frame_number == frame_number,
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.media_id == media.id,
+                SQLAAnnotation.layer_id == layer.layer_id,
+                SQLAAnnotation.frame_number == frame_number,
             ).delete()
 
             for ann in annotations:
-                record = Annotation(
+                record = SQLAAnnotation(
                     media_id=media.id,
-                    job_id=job_id,
+                    layer_id=layer.layer_id,
+                    label_id=ann.label.label_id,
                     frame_number=frame_number,
-                    label_name=ann["label"],
-                    shape_type=ann["type"],
-                    geometry=json.dumps(ann["geometry"]),
+                    shape_type=ann.shape_type,
+                    geometry=json.dumps(ann.geometry),
                 )
-
                 session.add(record)
-
-            session.commit()
+                session.commit()
 
     def load_annotations(
             self,
             media_path: str,
-            job_id: int,
+            layer_id: int,
             frame_number: Optional[int],
-    ) -> List[dict]:
+    ) -> List[Annotation]:
+
         with self.Session() as session:
             media = (
                 session.query(Media)
@@ -209,31 +266,58 @@ class DatabaseManager:
                 return []
 
             records = (
-                session.query(Annotation)
+                session.query(SQLAAnnotation)
+                .options(
+                    joinedload(SQLAAnnotation.layer).joinedload(SQLALayer.labels),
+                    joinedload(SQLAAnnotation.label),
+                )
                 .filter(
-                    Annotation.media_id == media.id,
-                    Annotation.job_id == job_id,
-                    Annotation.frame_number == frame_number,
+                    SQLAAnnotation.media_id == media.id,
+                    SQLAAnnotation.layer_id == layer_id,
+                    SQLAAnnotation.frame_number == frame_number,
                 )
                 .all()
             )
 
-            return [
-                {
-                    "id": r.id,
-                    "label": r.label_name,
-                    "type": r.shape_type,
-                    "geometry": json.loads(r.geometry),
-                }
-                for r in records
-            ]
+            annotations = []
 
-    def delete_annotations(
-            self,
-            media_path: str,
-            job_id: int,
-            frame_number: Optional[int],
-    ):
+            for r in records:
+                layer_dc = Layer(
+                    layer_id=r.layer.id,
+                    name=r.layer.name,
+                    labels=[
+                        Label(
+                            label_id=l.id,
+                            name=l.name,
+                            color=l.color,
+                            layer=r.layer.name,
+                        )
+                        for l in r.layer.labels
+                    ],
+                )
+
+                label_dc = Label(
+                    label_id=r.label.id,
+                    name=r.label.name,
+                    color=r.label.color,
+                    layer=r.layer.name,
+                )
+
+                annotations.append(
+                    Annotation(
+                        annotation_id=r.id,
+                        media_name=media_path,
+                        layer=layer_dc,
+                        label=label_dc,
+                        frame_number=r.frame_number,
+                        shape_type=r.shape_type,
+                        geometry=json.loads(r.geometry),
+                    )
+                )
+
+            return annotations
+
+    def delete_annotations(self, media_path: str, layer_id: int, frame_number: Optional[int]):
         with self.Session() as session:
             media = (
                 session.query(Media)
@@ -244,13 +328,29 @@ class DatabaseManager:
             if media is None:
                 return
 
-            session.query(Annotation).filter(
-                Annotation.media_id == media.id,
-                Annotation.job_id == job_id,
-                Annotation.frame_number == frame_number,
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.media_id == media.id,
+                SQLAAnnotation.layer_id == layer_id,
+                SQLAAnnotation.frame_number == frame_number,
             ).delete()
 
             session.commit()
+
+    def update_annotation_geometry(self, annotation_id: int, new_geometry: dict) -> bool:
+        """Update the geometry of an existing annotation."""
+        with self.Session() as session:
+            annotation = session.get(SQLAAnnotation, annotation_id)
+            if not annotation:
+                return False
+
+            annotation.geometry = json.dumps(new_geometry)
+            annotation.updated_at = datetime.utcnow()
+            session.commit()
+            return True
+
+    # ------------------------------------------------------------------
+    # AI models
+    # ------------------------------------------------------------------
 
     def get_model_path(self, key: str):
         with self.Session() as session:
@@ -262,10 +362,12 @@ class DatabaseManager:
             config = session.get(ModelConfig, key)
 
             if config is None:
-                config = ModelConfig(key=key, path=path)
+                config = ModelConfig(
+                    key=key,
+                    path=path,
+                )
                 session.add(config)
             else:
                 config.path = path
 
             session.commit()
-

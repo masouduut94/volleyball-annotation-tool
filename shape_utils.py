@@ -8,9 +8,15 @@ from PyQt6.QtWidgets import (
 
 
 class BaseAnnotationItem:
+
+    def __init__(self):
+        self.layer_name = None
+
     def _setup_style(self, color: str, label: str = ""):
         self.annotation_color = QColor(color)
         self.label = label
+
+        self.layer_name = "court"
 
         self.fill_alpha = 40
         self.hover_fill_alpha = 80
@@ -106,6 +112,9 @@ class BaseAnnotationItem:
             self._apply_selected()
         else:
             self._apply_normal()
+
+    def set_layer(self, layer_name: str):
+        self.layer_name = layer_name
 
 
 class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):

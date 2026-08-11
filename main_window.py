@@ -1,5 +1,7 @@
-from pathlib import Path
+from typing import Optional, Dict
+
 import cv2
+import numpy as np
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
@@ -12,7 +14,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QLabel,
-    QComboBox,
     QMessageBox
 )
 
@@ -21,19 +22,22 @@ from graphics_scene import AnnotationScene, ToolMode
 from database.db import DatabaseManager
 from config_dialog import ConfigDialog
 from services.auto_annotator import AutoAnnotator
+from services.batch_inference import BatchInferenceDialog
+from ui.layer_sidebar import LayerSidebar
+from ui.tools import information_box
+from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
+
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, db_path: str = "annotations.db"):
         super().__init__()
 
         self.original_frame = None
         self.setWindowTitle("Volleyball Annotation Platform")
         self.resize(1200, 800)
 
-        self.db = DatabaseManager()
+        self.db = DatabaseManager(db_path=db_path)
         self.auto_annotator = AutoAnnotator(self.db)
-
-        self.current_job = self.db.get_jobs()[0]
 
         self.image_paths = []
         self.current_index = 0
@@ -45,32 +49,53 @@ class MainWindow(QMainWindow):
         self.original_width = 960
         self.original_height = 540
 
+        self.current_layer = "court"
+        self.current_label = "net"
+
+        self.visible_layers = {
+            "court": True,
+            "players": True,
+            "ball": True,
+            "actions": True,
+        }
+
+        self.locked_layers = {
+            "court": False,
+            "players": False,
+            "ball": False,
+            "actions": False,
+        }
+
         self._create_ui()
 
         QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
         QShortcut(QKeySequence("D"), self, activated=self.next_frame)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
-
-        QShortcut(
-            QKeySequence("Shift+Delete"),
-            self,
-            activated=self.clear_current_frame_annotations
-        )
+        QShortcut(QKeySequence("Shift+Delete"), self, activated=self.clear_current_frame_annotations)
+        QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=self.open_batch_inference)
 
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
 
     def _create_ui(self):
-        self.scene = AnnotationScene()
+        self.scene = AnnotationScene(self.db)
         self.view = GraphicsView()
         self.view.setScene(self.scene)
+        self.scene.set_current_layer(
+            self.current_layer,
+        )
 
         self._create_top_toolbar()
         self._create_left_toolbar()
 
         central = QWidget()
         self.setCentralWidget(central)
+        self.setStyleSheet(
+            """
+            background-color: #1E1F24;
+            """
+        )
 
         main_layout = QVBoxLayout(central)
         content_layout = QHBoxLayout()
@@ -79,7 +104,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.view, 1)
 
         main_layout.addLayout(content_layout)
-        main_layout.addLayout(self._create_bottom_bar())
+        main_layout.addWidget(self._create_bottom_bar())
 
     def _create_top_toolbar(self):
         toolbar = QToolBar()
@@ -105,100 +130,234 @@ class MainWindow(QMainWindow):
         config.triggered.connect(self.open_config)
         toolbar.addAction(config)
 
+        # AI Batch Inference
+        batch_action = QAction("AI Batch Inference", self)
+        batch_action.triggered.connect(self.open_batch_inference)
+        toolbar.addAction(batch_action)
+
     def open_config(self):
         dialog = ConfigDialog(self.db, self)
         dialog.exec()
 
-        self.refresh_jobs_and_labels()
-
     def _create_left_toolbar(self):
-        self.left_toolbar = QWidget()
-        layout = QVBoxLayout(self.left_toolbar)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.setSpacing(10)
+        self.left_toolbar = LayerSidebar()
+        self.left_toolbar.layerChanged.connect(self.layer_changed)
+        self.left_toolbar.labelChanged.connect(self.label_changed)
+        self.left_toolbar.toolChanged.connect(self.tool_changed)
 
-        # ---------------------------- # Job selector # ----------------------------
-        layout.addWidget(QLabel("Job"))
-        self.job_combo = QComboBox()
-        self.job_combo.currentIndexChanged.connect(self.job_changed)
-        layout.addWidget(self.job_combo)
-        # ---------------------------- # Label selector # ----------------------------
-        layout.addWidget(QLabel("Label"))
-        self.label_combo = QComboBox()
-        self.label_combo.currentIndexChanged.connect(self.label_changed)
-        layout.addWidget(self.label_combo)
-        layout.addSpacing(15)
-        # ---------------------------- # Rectangle tool # ----------------------------
-        self.rect_btn = QPushButton("Rectangle")
-        self.rect_btn.setCheckable(True)
-        self.rect_btn.setChecked(True)
-        self.rect_btn.clicked.connect(self.activate_rectangle)
-        layout.addWidget(self.rect_btn)
-        # ---------------------------- # Polygon tool # ----------------------------
-        self.poly_btn = QPushButton("Polygon")
-        self.poly_btn.setCheckable(True)
-        self.poly_btn.clicked.connect(self.activate_polygon)
-        layout.addWidget(self.poly_btn)
-        layout.addStretch()
-        self.refresh_jobs_and_labels()
+        self.activate_rectangle()
 
-        layout.addSpacing(20)
+        # Layers option
+        self.left_toolbar.visibilityChanged.connect(
+            self.layer_visibility_changed
+        )
 
-        layout.addWidget(QLabel("Auto-Annotate"))
+        self.left_toolbar.lockChanged.connect(
+            self.layer_lock_changed
+        )
 
-        self.ball_btn = QPushButton("Ball")
-        self.ball_btn.clicked.connect(self.auto_annotate_ball)
-        layout.addWidget(self.ball_btn)
+        # Auto-annotate adjustment for automatic layer change.
 
-        self.court_btn = QPushButton("Court")
-        self.court_btn.clicked.connect(self.auto_annotate_court)
-        layout.addWidget(self.court_btn)
+        self.left_toolbar.detect_court_btn.clicked.connect(
+            lambda: self.run_layer_ai("court", "court")
+        )
 
-        self.actions_btn = QPushButton("Actions")
-        self.actions_btn.clicked.connect(self.auto_annotate_actions)
-        layout.addWidget(self.actions_btn)
+        self.left_toolbar.detect_players_btn.clicked.connect(
+            lambda: self.run_layer_ai("players", "players")
+        )
 
-        self.players_btn = QPushButton("Players")
-        self.players_btn.clicked.connect(self.auto_annotate_players)
-        layout.addWidget(self.players_btn)
+        self.left_toolbar.detect_ball_btn.clicked.connect(
+            lambda: self.run_layer_ai("ball", "ball")
+        )
+
+        self.left_toolbar.detect_actions_btn.clicked.connect(
+            lambda: self.run_layer_ai("actions", "actions")
+        )
+
+    def run_layer_ai(self, layer_name, model_key):
+        self.left_toolbar.set_layer(layer_name)
+        self.auto_annotate(model_key)
 
     def _create_bottom_bar(self):
-        layout = QHBoxLayout()
+        # Create container widget for styling
+        bottom_widget = QWidget()
+        bottom_widget.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                border-top: 1px solid #3c3c3c;
+                padding: 5px 10px;
+            }
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                border-color: #666;
+            }
+            QPushButton:pressed {
+                background-color: #2a2a2a;
+            }
+            QPushButton:disabled {
+                background-color: #2b2b2b;
+                color: #666;
+                border-color: #3c3c3c;
+            }
+            QSpinBox {
+                background-color: #3c3c3c;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px 6px;
+                font-size: 12px;
+                min-width: 80px;
+            }
+            QSpinBox:hover {
+                border-color: #666;
+            }
+            QSpinBox:focus {
+                border-color: #4a90d9;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background-color: #3c3c3c;
+                border: none;
+                width: 16px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #4a4a4a;
+            }
+            QLabel {
+                color: #b0b0b0;
+                font-size: 12px;
+            }
+            QLabel#total_label {
+                color: #888;
+                font-weight: 300;
+            }
+            QLabel#frame_label {
+                color: #888;
+                font-weight: 300;
+                margin-right: 4px;
+            }
+            QLabel#separator_label {
+                color: #555;
+                font-weight: 300;
+                margin: 0 2px;
+            }
+        """)
 
-        prev_btn = QPushButton("Previous")
+        layout = QHBoxLayout(bottom_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # --- Navigation buttons with icons ---
+        prev_btn = QPushButton("◀ Previous")
+        prev_btn.setToolTip("Previous frame (A)")
         prev_btn.clicked.connect(self.previous_frame)
 
-        next_btn = QPushButton("Next")
+        next_btn = QPushButton("Next ▶")
+        next_btn.setToolTip("Next frame (D)")
         next_btn.clicked.connect(self.next_frame)
+
+        # --- Separator ---
+        separator1 = QLabel("|")
+        separator1.setObjectName("separator_label")
+
+        # --- Frame navigation with spin box ---
+        frame_label = QLabel("Frame")
+        frame_label.setObjectName("frame_label")
 
         self.frame_spin = QSpinBox()
         self.frame_spin.setMinimum(0)
+        self.frame_spin.setToolTip("Jump to frame number")
         self.frame_spin.valueChanged.connect(self.goto_frame)
 
-        self.total_label = QLabel("/ 0")
+        # --- Total frames display ---
+        separator2 = QLabel("/")
+        separator2.setObjectName("separator_label")
 
+        self.total_label = QLabel("0")
+        self.total_label.setObjectName("total_label")
+
+        # --- Spacer to push everything to the left ---
         layout.addWidget(prev_btn)
         layout.addWidget(next_btn)
-        layout.addWidget(QLabel("Frame:"))
+        layout.addWidget(separator1)
+        layout.addWidget(frame_label)
         layout.addWidget(self.frame_spin)
+        layout.addWidget(separator2)
         layout.addWidget(self.total_label)
         layout.addStretch()
 
-        return layout
+        return bottom_widget
 
     # ---------------------------------------------------------
     # Tools
     # ---------------------------------------------------------
 
+    def layer_visibility_changed(self, layer, visible):
+        self.visible_layers[layer] = visible
+        self.reload_visible_layers()
+
+    def layer_lock_changed(self, layer, locked):
+        self.locked_layers[layer] = locked
+
+    def reload_visible_layers(self):
+        path, _, frame = self.current_media_info()
+
+        if path is None:
+            return
+
+        # Clear all rendered annotation items
+        self.scene.clear_annotations()
+
+        # Clear label registry in the scene
+        self.scene.layer_labels.clear()
+
+        for layer_name, visible in self.visible_layers.items():
+            if not visible:
+                continue
+
+            layer = self.db.get_layer(layer_name)
+
+            if layer is None:
+                continue
+
+            # Register labels for this layer
+            labels = layer.labels
+
+            self.scene.set_layer_labels(layer.name, labels)
+
+            # Load annotations for this layer
+            annotations = self.db.load_annotations(
+                media_path=path,
+                layer_id=layer.layer_id,
+                frame_number=frame,
+            )
+
+            self.scene.load_annotations(annotations=annotations, layer_name=layer_name)
+
+        # Update the scene's active layer
+        self.scene.set_current_layer(self.current_layer)
+
+        # Emit a single update notification
+        self.scene.annotation_changed.emit()
+
     def activate_rectangle(self):
-        self.rect_btn.setChecked(True)
-        self.poly_btn.setChecked(False)
+        self.left_toolbar.rect_btn.setChecked(True)
+        self.left_toolbar.poly_btn.setChecked(False)
         self.scene.set_tool(ToolMode.RECTANGLE)
 
     def activate_polygon(self):
-        self.rect_btn.setChecked(False)
-        self.poly_btn.setChecked(True)
+        self.left_toolbar.rect_btn.setChecked(False)
+        self.left_toolbar.poly_btn.setChecked(True)
         self.scene.set_tool(ToolMode.POLYGON)
+        # self.update_tool_buttons()
 
     # ---------------------------------------------------------
     # Image loading
@@ -290,19 +449,15 @@ class MainWindow(QMainWindow):
         self.goto_frame(0)
 
     def goto_frame(self, frame_number):
-        if self.cap is None:
-            if self.image_paths:
-                self.current_index = frame_number
-                self.load_current_image()
+        frame = self.get_frame_by_number(frame_number)
+        if frame is None:
+            QMessageBox.warning(
+                self,
+                "No frame",
+                "Please load an image or video first.",
+            )
             return
-
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-
-        ok, frame = self.cap.read()
-        self.original_frame = frame
-
-        if not ok:
-            return
+        self.original_frame = frame.copy()
 
         self.original_height, self.original_width = frame.shape[:2]
 
@@ -348,6 +503,14 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------
 
     def current_media_info(self):
+        """
+        It gives access to 3 things:
+        - video_path/image_paths
+        - media_type "video/image"
+        - frame_number if it's video type
+        Returns:
+
+        """
         if self.cap is not None:
             return (
                 self.video_path,
@@ -366,6 +529,7 @@ class MainWindow(QMainWindow):
 
     def save_annotations(self):
         path, media_type, frame = self.current_media_info()
+        layer = self.db.get_layer(self.current_layer)
 
         if path is None:
             QMessageBox.warning(
@@ -380,24 +544,13 @@ class MainWindow(QMainWindow):
             media_type=media_type,
             width=self.original_width,
             height=self.original_height,
-            job_id=self.current_job.id,
+            layer=layer,
             frame_number=frame,
-            annotations=self.scene.export_annotations(),
+            annotations=self.scene.export_annotations(self.current_layer, path, frame),
         )
 
         # self.statusBar().showMessage("Annotations saved successfully.", 3000)  # 3 seconds
-        message_label = QLabel("✅ Annotations saved successfully.", self)
-        message_label.setStyleSheet(
-            "background-color: #333; color: white; padding: 20px 20px; "
-            "border-radius: 5px; font-size: 20px;"
-        )
-        message_label.adjustSize()
-        message_label.move(
-            (self.width() - message_label.width()) // 2,
-            50
-        )
-        message_label.show()
-        QTimer.singleShot(3000, message_label.hide)
+        information_box(self, message="✅ Annotations saved successfully.")
 
     def load_annotations(self):
         path, _, frame = self.current_media_info()
@@ -405,120 +558,49 @@ class MainWindow(QMainWindow):
         if path is None:
             return
 
+        layer = self.db.get_layer(self.current_layer)
+
+        if layer is None:
+            return
+
         annotations = self.db.load_annotations(
             media_path=path,
-            job_id=self.current_job_id,
+            layer_id=layer.layer_id,
             frame_number=frame,
         )
 
-        self.scene.load_annotations(annotations)
+        self.scene.load_annotations(
+            annotations=annotations,
+            layer_name=self.current_layer
+        )
 
-    def refresh_jobs_and_labels(self):
-        """ Reload job and label dropdowns after configuration changes. Preserve the current job if it still exists. """
-
-        previous_job_id = getattr(self, "current_job_id", None)
-
-        self.job_combo.blockSignals(True)
-        self.job_combo.clear()
-
-        jobs = self.db.get_jobs()
-
-        selected_index = -1
-
-        for index, job in enumerate(jobs):
-            self.job_combo.addItem(job.name, job.id)
-
-            if job.id == previous_job_id:
-                selected_index = index
-
-        if jobs:
-            if selected_index == -1:
-                selected_index = 0
-
-                self.job_combo.setCurrentIndex(selected_index)
-                self.current_job_id = self.job_combo.currentData()
-        else:
-            self.current_job_id = None
-
-        self.job_combo.blockSignals(False)
-
-        self.load_labels()
-
-    def job_changed(self, index):
-        if index < 0:
-            return
-
-        self.current_job_id = self.job_combo.currentData()
-
-        self.load_labels()
-
-        # Clear current scene
+    def layer_changed(self, layer_name):
+        self.current_layer = layer_name
+        self.scene.set_current_layer(layer_name)
         self.scene.clear_annotations()
-
-        # Load annotations only for this job
         self.load_annotations()
 
-    def load_labels(self):
-        previous_label_name = None
+    def label_changed(self, label_name):
+        self.current_label = label_name
+        layer = self.db.get_layer(self.current_layer)
+        labels = {label.name: label for label in layer.labels}
 
-        if getattr(self, "current_label", None):
-            previous_label_name = self.current_label.name
-
-        self.label_combo.blockSignals(True)
-        self.label_combo.clear()
-
-        if self.current_job_id is None:
-            self.current_label = None
-            self.label_combo.blockSignals(False)
-            return
-
-        labels = self.db.get_labels(self.current_job_id)
-
-        available_labels = {}
-
-        selected_index = -1
-
-        for index, label in enumerate(labels):
-            self.label_combo.addItem(label.name, label)
-            available_labels[label.name] = label.color
-
-            if label.name == previous_label_name:
-                selected_index = index
-
-        self.scene.set_available_labels(available_labels)
-
-        if labels:
-            if selected_index == -1:
-                selected_index = 0
-            self.label_combo.setCurrentIndex(selected_index)
-            self.current_label = self.label_combo.currentData()
-            self.scene.set_current_label(
-                self.current_label.name,
-                self.current_label.color
-            )
-        else:
-            self.current_label = None
-
-        self.label_combo.blockSignals(False)
-
-    def label_changed(self, index):
-        if index < 0:
-            return
-
-        label = self.label_combo.currentData()
-
-        if label is None:
-            return
-
-        self.current_label = label
+        color = labels[label_name].color
 
         self.scene.set_current_label(
-            label.name,
-            label.color
+            label_name,
+            color,
         )
+
+    def tool_changed(self, tool_name):
+        if tool_name == "rectangle":
+            self.activate_rectangle()
+        elif tool_name == "polygon":
+            self.activate_polygon()
 
     def clear_current_frame_annotations(self):
         path, media_type, frame = self.current_media_info()
+        layer = self.db.get_layer(self.current_layer)
 
         if path is None:
             return
@@ -527,19 +609,11 @@ class MainWindow(QMainWindow):
 
         self.db.delete_annotations(
             media_path=path,
-            job_id=self.current_job_id,
+            layer_id=layer.layer_id,
             frame_number=frame,
         )
 
     def auto_annotate(self, model_key):
-        if self.current_job_id is None:
-            QMessageBox.warning(
-                self,
-                "No job",
-                "Please select a job first.",
-            )
-            return
-
         frame = self.original_frame
 
         if frame is None:
@@ -561,16 +635,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        job_labels = {
-            label.name.lower(): label
-            for label in self.db.get_labels(self.current_job_id)
-        }
-
+        layer = self.db.get_layer(self.current_layer)
         imported = self.scene.import_yolo_result(
             result,
-            job_labels,
+            layer,
             self.original_width,
-            self.original_height,
+            self.original_height
         )
 
         if imported == 0:
@@ -579,7 +649,7 @@ class MainWindow(QMainWindow):
                 "No matching labels",
                 (
                     "The model produced detections, but none of the detected "
-                    "class names match the labels defined for the current job."
+                    "class names match the labels defined for the active layer."
                 ),
             )
 
@@ -595,4 +665,125 @@ class MainWindow(QMainWindow):
     def auto_annotate_players(self):
         self.auto_annotate("players")
 
+    def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
+        if self.cap is None:
+            if self.image_paths and frame_number < len(self.image_paths):
+                path = self.image_paths[frame_number]
+                image = cv2.imread(path)
+                return image
 
+        self.cap.set(
+            cv2.CAP_PROP_POS_FRAMES,
+            frame_number,
+        )
+
+        ok, frame = self.cap.read()
+
+        if not ok:
+            return None
+
+        return frame
+
+    def run_batch_inference_on_frame(
+            self,
+            frame_number,
+            model_keys,
+    ):
+        imported_total = 0
+        frame = self.get_frame_by_number(frame_number)
+
+        for model_key in model_keys:
+            result = self.auto_annotator.predict(
+                model_key,
+                frame,
+            )
+
+            layer = self.db.get_layer(model_key)
+
+            annotations, imported = self.convert_result_to_annotations(result, layer)
+
+            layer = self.db.get_layer(model_key)
+            path, media_type, _ = self.current_media_info()
+
+            if len(annotations) == 0:
+                continue
+
+            self.db.save_annotations(
+                media_path=path,
+                media_type=media_type,
+                width=self.original_width,
+                height=self.original_height,
+                layer=layer,
+                frame_number=frame_number,
+                annotations=annotations,
+            )
+
+            imported_total += imported
+
+        return imported_total
+
+    def open_batch_inference(self):
+        if self.video_path is None and len(self.image_paths) == 0:
+            QMessageBox.warning(
+                self,
+                "No media loaded",
+                "Please open a video or image sequence first.",
+            )
+            return
+
+        dialog = BatchInferenceDialog(
+            db=self.db,
+            auto_annotator=self.auto_annotator,
+            main_window=self,
+            parent=self,
+        )
+
+        dialog.exec()
+
+    def convert_result_to_annotations(self, result, layer: Layer):
+        imported = 0
+        annotations = []
+        path, media_type, frame_number = self.current_media_info()
+        labels = {label.name: label for label in layer.labels}
+        # Detection
+        if result.boxes is not None:
+            for box in result.boxes:
+
+                cls = int(box.cls[0])
+                name = result.names[cls].lower()
+
+                if name not in labels:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                Annotation(
+                    media_name=path,
+                    frame_number=frame_number,
+                    shape_type='rectangle',
+                    label=labels[name],
+                    layer=layer,
+                    geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                )
+                imported += 1
+
+        # Segmentation
+        if result.masks is not None:
+            for mask, cls in zip(result.masks.xy, result.boxes.cls):
+                name = result.names[int(cls)].lower()
+
+                if name not in labels:
+                    continue
+
+                annotations.append(
+                    Annotation(
+                        media_name=path,
+                        frame_number=frame_number,
+                        shape_type='polygon',
+                        label=labels[name],
+                        layer=layer,
+                        geometry=[[float(x), float(y)] for x, y in mask]
+                    )
+                )
+
+                imported += 1
+        return annotations, imported

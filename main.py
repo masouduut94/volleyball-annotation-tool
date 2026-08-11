@@ -6,8 +6,8 @@ from main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
-
-    window = MainWindow()
+    db_save_path = '/home/masoud/Desktop/projects/volleyball_analytics/db/annotations.db'
+    window = MainWindow(db_path=db_save_path)
     window.show()
 
     sys.exit(app.exec())
