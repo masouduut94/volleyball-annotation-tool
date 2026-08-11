@@ -1,4 +1,4 @@
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QSize
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QWidget,
@@ -10,13 +10,14 @@ from PyQt6.QtWidgets import (
     QToolButton
 )
 
+from vb_gui.vb_annotator.resources.icons import rectangle_icon, polygon_icon
+
 
 class LayerSidebar(QWidget):
     layerChanged = pyqtSignal(str)
     labelChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
-    lockChanged = pyqtSignal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +97,7 @@ class LayerSidebar(QWidget):
             
             QPushButton:hover {
                 background: #323540;
+                border: 1px solid #E95420;
             }
             
             QPushButton#activeLayer {
@@ -131,8 +133,8 @@ class LayerSidebar(QWidget):
                 background: #2C313A;
                 border: 1px solid #3A3F4B;
                 border-radius: 10px;
-                padding: 8px;
                 color: #E6E6E6;
+                margin=0px;
                 min-width: 42px;
                 max-width: 42px;
                 min-height: 42px;
@@ -147,7 +149,7 @@ class LayerSidebar(QWidget):
                 background: #E95420;
                 border: 1px solid #E95420;
                 border-radius: 10px;
-                padding: 8px;
+                margin=0px;
                 color: white;
                 min-width: 42px;
                 max-width: 42px;
@@ -183,6 +185,18 @@ class LayerSidebar(QWidget):
             QToolButton:hover {
                 color: white;
             }
+            QToolTip {
+                background-color: #FFF8C6;   /* light warm yellow */
+                color: #202020;              /* dark text */
+                border: 1px solid #C9B458;
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            
+            
+            
         """)
 
         layout = QVBoxLayout(self)
@@ -201,7 +215,6 @@ class LayerSidebar(QWidget):
             row = LayerRow(layer)
             row.clicked.connect(self.set_layer)
             row.visibilityChanged.connect(self.visibilityChanged.emit)
-            row.lockChanged.connect(self.lockChanged.emit)
 
             self.layer_rows[layer] = row
             layout.addWidget(row)
@@ -224,20 +237,26 @@ class LayerSidebar(QWidget):
         tools = QHBoxLayout()
         tools.setSpacing(8)
 
-        self.rect_btn = QPushButton("▭")
+        icon_size = 25
+        btn_size = 30
+        self.rect_btn = QPushButton()
+        self.rect_btn.setIcon(rectangle_icon(size=60))
+        self.rect_btn.setFixedSize(btn_size, btn_size)
+        self.rect_btn.setIconSize(QSize(icon_size, icon_size))
         self.rect_btn.setFont(QFont("Arial", 14))
+        self.rect_btn.setToolTip("Rectangle Tool")
         self.rect_btn.clicked.connect(lambda: self.set_tool("rectangle"))
 
-        self.poly_btn = QPushButton("⬡")
+        self.poly_btn = QPushButton()
+        self.poly_btn.setIcon(polygon_icon(size=100, sides=6))
+        self.poly_btn.setFixedSize(btn_size, btn_size)
+        self.poly_btn.setIconSize(QSize(icon_size, icon_size))
         self.poly_btn.setFont(QFont("Arial", 14))
+        self.poly_btn.setToolTip("Polygon Tool")
         self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
-
-        self.select_btn = QPushButton("🖱")
-        self.select_btn.clicked.connect(lambda: self.set_tool("select"))
 
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)
-        tools.addWidget(self.select_btn)
         tools.addStretch()
 
         layout.addLayout(tools)
@@ -282,8 +301,8 @@ class LayerSidebar(QWidget):
 
         for name, row in self.layer_rows.items():
             row.set_active(name == layer)
-            # row.style().unpolish(btn)
-            # row.style().polish(btn)
+            row.style().unpolish(row)
+            row.style().polish(row)
 
         self.rebuild_labels()
 
@@ -323,9 +342,8 @@ class LayerSidebar(QWidget):
 
         self.rect_btn.setObjectName("toolActive" if tool == "rectangle" else "tool")
         self.poly_btn.setObjectName("toolActive" if tool == "polygon" else "tool")
-        self.select_btn.setObjectName("toolActive" if tool == "select" else "tool")
 
-        for btn in [self.rect_btn, self.poly_btn, self.select_btn]:
+        for btn in [self.rect_btn, self.poly_btn]:
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -336,19 +354,27 @@ class LayerSidebar(QWidget):
 class LayerRow(QWidget):
     clicked = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
-    lockChanged = pyqtSignal(str, bool)
+    # lockChanged = pyqtSignal(str, bool)
 
     def __init__(self, layer_name):
         super().__init__()
 
         self.layer_name = layer_name
         self.visible = True
-        self.locked = False
+        # self.locked = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
 
         self.name_btn = QPushButton(layer_name)
+        self.name_btn.setStyleSheet(
+            """
+                QPushButton:hover {
+                        background: #383C47;
+                        border-color: #E95420;
+                    }
+            """
+        )
         self.name_btn.setFlat(True)
         self.name_btn.clicked.connect(
             lambda: self.clicked.emit(layer_name)
@@ -358,13 +384,9 @@ class LayerRow(QWidget):
         self.eye_btn.setText("👁")
         self.eye_btn.clicked.connect(self.toggle_visibility)
 
-        self.lock_btn = QToolButton()
-        self.lock_btn.setText("🔓")
-        self.lock_btn.clicked.connect(self.toggle_lock)
-
         layout.addWidget(self.name_btn, 1)
         layout.addWidget(self.eye_btn)
-        layout.addWidget(self.lock_btn)
+        # layout.addWidget(self.lock_btn)
 
         self.set_active(False)
 
@@ -388,22 +410,11 @@ class LayerRow(QWidget):
             self.visible,
         )
 
-    def toggle_lock(self):
-        self.locked = not self.locked
-        self.lock_btn.setText(
-            "🔒" if self.locked else "🔓"
-        )
-        self.lockChanged.emit(
-            self.layer_name,
-            self.locked,
-        )
 
 class LabelRow(QPushButton):
     def __init__(self, name, color):
         super().__init__()
-
         self.label_name = name
-
         self.setText(f"●  {name}")
 
         self.setStyleSheet(f"""

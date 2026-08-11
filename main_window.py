@@ -59,13 +59,6 @@ class MainWindow(QMainWindow):
             "actions": True,
         }
 
-        self.locked_layers = {
-            "court": False,
-            "players": False,
-            "ball": False,
-            "actions": False,
-        }
-
         self._create_ui()
 
         QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
@@ -150,10 +143,6 @@ class MainWindow(QMainWindow):
         # Layers option
         self.left_toolbar.visibilityChanged.connect(
             self.layer_visibility_changed
-        )
-
-        self.left_toolbar.lockChanged.connect(
-            self.layer_lock_changed
         )
 
         # Auto-annotate adjustment for automatic layer change.
@@ -303,9 +292,6 @@ class MainWindow(QMainWindow):
     def layer_visibility_changed(self, layer, visible):
         self.visible_layers[layer] = visible
         self.reload_visible_layers()
-
-    def layer_lock_changed(self, layer, locked):
-        self.locked_layers[layer] = locked
 
     def reload_visible_layers(self):
         path, _, frame = self.current_media_info()
