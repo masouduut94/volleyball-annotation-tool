@@ -1,3 +1,18 @@
+"""
+Layer Sidebar Module for VB Annotator
+
+This module provides the sidebar user interface for the VB Annotator application,
+allowing users to manage layers, labels, annotation tools, and AI-assisted features.
+The LayerSidebar widget serves as the main control panel for annotation operations.
+
+Key Features:
+- Layer management with visibility toggling
+- Label selection for active layers
+- Tool selection (rectangle, polygon)
+- AI-assisted detection tools
+- Dynamic UI updates based on layer selection
+"""
+
 from PyQt6.QtCore import pyqtSignal, QSize
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -14,12 +29,33 @@ from vb_gui.vb_annotator.resources.icons import rectangle_icon, polygon_icon
 
 
 class LayerSidebar(QWidget):
+    """
+    Main sidebar widget for annotation controls.
+
+    This widget provides the complete sidebar interface including layer management,
+    label selection, tool selection, and AI assistance buttons. It maintains the
+    current state of layers, labels, and tools, and emits signals when changes occur.
+
+    Signals:
+        layerChanged: Emitted when the active layer changes (str)
+        labelChanged: Emitted when the active label changes (str)
+        toolChanged: Emitted when the annotation tool changes (str)
+        visibilityChanged: Emitted when a layer's visibility is toggled (str, bool)
+    """
+
     layerChanged = pyqtSignal(str)
     labelChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
 
     def __init__(self, db, parent=None):
+        """
+        Initialize the LayerSidebar widget.
+
+        Args:
+            db: Database connection object containing layer and label data
+            parent: Parent widget (optional)
+        """
         super().__init__(parent)
 
         self.setFixedWidth(260)
@@ -46,19 +82,31 @@ class LayerSidebar(QWidget):
         self.set_tool("rectangle")
 
     def _build_ui(self):
+        """
+        Build the complete user interface for the sidebar.
+
+        This method creates all UI components including:
+        - Title header
+        - Layer list with visibility controls
+        - Label buttons for the active layer
+        - Tool selection buttons
+        - AI assistance buttons
+
+        All styling is applied through the stylesheet defined in this method.
+        """
         self.setStyleSheet("""
             QWidget {
                 background: #1E1F24;
                 color: #E6E6E6;
                 font-size: 13px;
             }
-            
+
             QLabel#title {
                 font-size: 18px;
                 font-weight: bold;
                 color: #F1F3F5;
             }
-            
+
             QLabel#section {
                 font-size: 11px;
                 font-weight: bold;
@@ -66,15 +114,15 @@ class LayerSidebar(QWidget):
                 margin-top: 10px;
                 letter-spacing: 0.5px;
             }
-            
+
             QFrame#line {
                 background: #2A2D34;
                 max-height: 1px;
                 min-height: 1px;
             }
-            
+
             /* ---------- Layer rows ---------- */
-            
+
             QPushButton {
                 background: transparent;
                 border: none;
@@ -83,18 +131,18 @@ class LayerSidebar(QWidget):
                 border-radius: 8px;
                 color: #E6E6E6;
             }
-            
+
             QPushButton:hover {
                 background: #323540;
                 border: 1px solid #E95420;
             }
-            
+
             QPushButton#activeLayer {
                 background: #E95420;
                 color: white;
                 font-weight: 600;
             }
-            
+
             QPushButton#labelButton {
                 background: transparent;
                 border: none;
@@ -103,11 +151,11 @@ class LayerSidebar(QWidget):
                 border-radius: 8px;
                 color: #D8DADF;
             }
-            
+
             QPushButton#labelButton:hover {
                 background: #323540;
             }
-            
+
             QPushButton#activeLabel {
                 background: #2C313A;
                 border: 1px solid #E95420;
@@ -115,9 +163,9 @@ class LayerSidebar(QWidget):
                 color: white;
                 font-weight: 600;
             }
-            
+
             /* ---------- Tool buttons ---------- */
-            
+
             QPushButton#tool {
                 background: #2C313A;
                 border: 1px solid #3A3F4B;
@@ -129,11 +177,11 @@ class LayerSidebar(QWidget):
                 min-height: 42px;
                 max-height: 42px;
             }
-            
+
             QPushButton#tool:hover {
                 background: #383C47;
             }
-            
+
             QPushButton#toolActive {
                 background: #E95420;
                 border: 1px solid #E95420;
@@ -145,9 +193,9 @@ class LayerSidebar(QWidget):
                 min-height: 42px;
                 max-height: 42px;
             }
-            
+
             /* ---------- AI buttons ---------- */
-            
+
             QPushButton#aiButton {
                 background: #2C313A;
                 border: 1px solid #3A3F4B;
@@ -156,21 +204,21 @@ class LayerSidebar(QWidget):
                 text-align: left;
                 color: #E6E6E6;
             }
-            
+
             QPushButton#aiButton:hover {
                 background: #383C47;
                 border-color: #E95420;
             }
-            
+
             /* ---------- Tool buttons ---------- */
-            
+
             QToolButton {
                 background: transparent;
                 border: none;
                 color: #9AA0A6;
                 padding: 4px;
             }
-            
+
             QToolButton:hover {
                 color: white;
             }
@@ -183,9 +231,9 @@ class LayerSidebar(QWidget):
                 font-size: 12px;
                 font-weight: 600;
             }
-            
-            
-            
+
+
+
         """)
 
         layout = QVBoxLayout(self)
@@ -275,6 +323,12 @@ class LayerSidebar(QWidget):
 
     @staticmethod
     def separator():
+        """
+        Create a horizontal separator line.
+
+        Returns:
+            QFrame: A horizontal line frame for visual separation
+        """
         line = QFrame()
         line.setObjectName("line")
         line.setFrameShape(QFrame.Shape.HLine)
@@ -282,11 +336,26 @@ class LayerSidebar(QWidget):
 
     @staticmethod
     def section(text):
+        """
+        Create a section header label.
+
+        Args:
+            text (str): The section title text
+
+        Returns:
+            QLabel: A styled label for section headers
+        """
         label = QLabel(text)
         label.setObjectName("section")
         return label
 
     def set_layer(self, layer):
+        """
+        Set the active layer and update the UI accordingly.
+
+        Args:
+            layer (str): Name of the layer to activate
+        """
         self.current_layer = layer
         self.layerChanged.emit(layer)
 
@@ -298,6 +367,12 @@ class LayerSidebar(QWidget):
         self.rebuild_labels()
 
     def rebuild_labels(self):
+        """
+        Rebuild the label buttons for the current active layer.
+
+        This method clears existing label buttons and creates new ones
+        based on the labels available for the current layer.
+        """
         while self.labels_layout.count():
             item = self.labels_layout.takeAt(0)
             widget = item.widget()
@@ -319,6 +394,12 @@ class LayerSidebar(QWidget):
         self.set_label(self.current_label)
 
     def set_label(self, label):
+        """
+        Set the active label and update the UI accordingly.
+
+        Args:
+            label (str): Name of the label to activate
+        """
         self.current_label = label
 
         for name, btn in self.label_buttons.items():
@@ -329,6 +410,12 @@ class LayerSidebar(QWidget):
         self.labelChanged.emit(label)
 
     def set_tool(self, tool):
+        """
+        Set the active annotation tool and update the UI accordingly.
+
+        Args:
+            tool (str): Tool name ('rectangle' or 'polygon')
+        """
         self.current_tool = tool
 
         self.rect_btn.setObjectName("toolActive" if tool == "rectangle" else "tool")
@@ -342,12 +429,29 @@ class LayerSidebar(QWidget):
 
 
 class LayerRow(QWidget):
+    """
+    Individual layer row widget for the sidebar.
+
+    This widget represents a single layer in the layer list, providing
+    click functionality for layer activation and visibility toggling.
+
+    Signals:
+        clicked: Emitted when the layer name is clicked (str)
+        visibilityChanged: Emitted when visibility is toggled (str, bool)
+    """
+
     clicked = pyqtSignal(str)
     visibilityChanged = pyqtSignal(str, bool)
 
     # lockChanged = pyqtSignal(str, bool)
 
     def __init__(self, layer_name):
+        """
+        Initialize a LayerRow widget.
+
+        Args:
+            layer_name (str): Name of the layer this row represents
+        """
         super().__init__()
 
         self.layer_name = layer_name
@@ -382,6 +486,12 @@ class LayerRow(QWidget):
         self.set_active(False)
 
     def set_active(self, active):
+        """
+        Set the visual state of the row to active or inactive.
+
+        Args:
+            active (bool): True to highlight as active, False otherwise
+        """
         if active:
             self.setStyleSheet(
                 "background:#E95420; border-radius:8px;"
@@ -392,6 +502,12 @@ class LayerRow(QWidget):
             )
 
     def toggle_visibility(self):
+        """
+        Toggle the visibility state of the layer and update the UI.
+
+        This method toggles the visible flag and updates the eye button
+        icon to reflect the current visibility state.
+        """
         self.visible = not self.visible
         self.eye_btn.setText(
             "👁" if self.visible else "🚫"
@@ -403,7 +519,24 @@ class LayerRow(QWidget):
 
 
 class LabelRow(QPushButton):
+    """
+    Individual label button widget.
+
+    This class represents a single label button in the label list,
+    displaying the label name with a color indicator.
+
+    Note: This class is currently not used in the main widget but
+    is maintained for potential future use.
+    """
+
     def __init__(self, name, color):
+        """
+        Initialize a LabelRow widget.
+
+        Args:
+            name (str): Name of the label
+            color (str): Color code for the label indicator
+        """
         super().__init__()
         self.label_name = name
         self.setText(f"●  {name}")

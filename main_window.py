@@ -1,3 +1,5 @@
+# main_window.py (updated version)
+
 from typing import Optional
 
 import cv2
@@ -23,7 +25,9 @@ from config_dialog import ConfigDialog
 from services.auto_annotator import AutoAnnotator
 from services.batch_inference import BatchInferenceDialog
 from ui.layer_sidebar import LayerSidebar
-from ui.tools import information_box
+from ui.top_toolbar import TopToolbar
+from ui.bottom_toolbar import BottomToolbar
+from ui.utils import information_box
 from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
 
 
@@ -74,12 +78,19 @@ class MainWindow(QMainWindow):
         self.scene = AnnotationScene(self.db)
         self.view = GraphicsView()
         self.view.setScene(self.scene)
-        self.scene.set_current_layer(
-            self.current_layer,
-        )
+        self.scene.set_current_layer(self.current_layer)
 
-        self._create_top_toolbar()
-        self._create_left_toolbar()
+        # Create toolbars
+        self.top_toolbar = TopToolbar(self)
+        self.addToolBar(self.top_toolbar)
+
+        self.left_toolbar = self._create_left_toolbar()
+        self.bottom_toolbar = BottomToolbar(self)
+
+        # Connect bottom toolbar signals
+        self.bottom_toolbar.previousFrame.connect(self.previous_frame)
+        self.bottom_toolbar.nextFrame.connect(self.next_frame)
+        self.bottom_toolbar.gotoFrame.connect(self.goto_frame)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -96,40 +107,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.view, 1)
 
         main_layout.addLayout(content_layout)
-        main_layout.addWidget(self._create_bottom_bar())
-
-    def _create_top_toolbar(self):
-        toolbar = QToolBar()
-        self.addToolBar(toolbar)
-
-        open_images = QAction("Open Images", self)
-        open_images.triggered.connect(self.open_images)
-        toolbar.addAction(open_images)
-
-        open_video = QAction("Open Video", self)
-        open_video.triggered.connect(self.open_video)
-        toolbar.addAction(open_video)
-
-        clear = QAction("Clear", self)
-        clear.triggered.connect(self.scene.clear_annotations)
-        toolbar.addAction(clear)
-
-        save = QAction("Save", self)
-        save.triggered.connect(self.save_annotations)
-        toolbar.addAction(save)
-
-        config = QAction("Config", self)
-        config.triggered.connect(self.open_config)
-        toolbar.addAction(config)
-
-        # AI Batch Inference
-        batch_action = QAction("AI Batch Inference", self)
-        batch_action.triggered.connect(self.open_batch_inference)
-        toolbar.addAction(batch_action)
-
-    def open_config(self):
-        dialog = ConfigDialog(self.db, self)
-        dialog.exec()
+        main_layout.addWidget(self.bottom_toolbar)
 
     def _create_left_toolbar(self):
         self.left_toolbar = LayerSidebar(self.db)
@@ -145,7 +123,6 @@ class MainWindow(QMainWindow):
         )
 
         # Auto-annotate adjustment for automatic layer change.
-
         self.left_toolbar.detect_court_btn.clicked.connect(
             lambda: self.run_layer_ai("court", "court")
         )
@@ -162,127 +139,15 @@ class MainWindow(QMainWindow):
             lambda: self.run_layer_ai("actions", "actions")
         )
 
+        return self.left_toolbar
+
+    def open_config(self):
+        dialog = ConfigDialog(self.db, self)
+        dialog.exec()
+
     def run_layer_ai(self, layer_name, model_key):
         self.left_toolbar.set_layer(layer_name)
         self.auto_annotate(model_key)
-
-    def _create_bottom_bar(self):
-        # Create container widget for styling
-        bottom_widget = QWidget()
-        bottom_widget.setStyleSheet("""
-            QWidget {
-                background-color: #2b2b2b;
-                border-top: 1px solid #3c3c3c;
-                padding: 5px 10px;
-            }
-            QPushButton {
-                background-color: #3c3c3c;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #4a4a4a;
-                border-color: #666;
-            }
-            QPushButton:pressed {
-                background-color: #2a2a2a;
-            }
-            QPushButton:disabled {
-                background-color: #2b2b2b;
-                color: #666;
-                border-color: #3c3c3c;
-            }
-            QSpinBox {
-                background-color: #3c3c3c;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 6px;
-                font-size: 12px;
-                min-width: 80px;
-            }
-            QSpinBox:hover {
-                border-color: #666;
-            }
-            QSpinBox:focus {
-                border-color: #4a90d9;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                background-color: #3c3c3c;
-                border: none;
-                width: 16px;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background-color: #4a4a4a;
-            }
-            QLabel {
-                color: #b0b0b0;
-                font-size: 12px;
-            }
-            QLabel#total_label {
-                color: #888;
-                font-weight: 300;
-            }
-            QLabel#frame_label {
-                color: #888;
-                font-weight: 300;
-                margin-right: 4px;
-            }
-            QLabel#separator_label {
-                color: #555;
-                font-weight: 300;
-                margin: 0 2px;
-            }
-        """)
-
-        layout = QHBoxLayout(bottom_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        # --- Navigation buttons with icons ---
-        prev_btn = QPushButton("◀ Previous")
-        prev_btn.setToolTip("Previous frame (A)")
-        prev_btn.clicked.connect(self.previous_frame)
-
-        next_btn = QPushButton("Next ▶")
-        next_btn.setToolTip("Next frame (D)")
-        next_btn.clicked.connect(self.next_frame)
-
-        # --- Separator ---
-        separator1 = QLabel("|")
-        separator1.setObjectName("separator_label")
-
-        # --- Frame navigation with spin box ---
-        frame_label = QLabel("Frame")
-        frame_label.setObjectName("frame_label")
-
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setMinimum(0)
-        self.frame_spin.setToolTip("Jump to frame number")
-        self.frame_spin.valueChanged.connect(self.goto_frame)
-
-        # --- Total frames display ---
-        separator2 = QLabel("/")
-        separator2.setObjectName("separator_label")
-
-        self.total_label = QLabel("0")
-        self.total_label.setObjectName("total_label")
-
-        # --- Spacer to push everything to the left ---
-        layout.addWidget(prev_btn)
-        layout.addWidget(next_btn)
-        layout.addWidget(separator1)
-        layout.addWidget(frame_label)
-        layout.addWidget(self.frame_spin)
-        layout.addWidget(separator2)
-        layout.addWidget(self.total_label)
-        layout.addStretch()
-
-        return bottom_widget
 
     # ---------------------------------------------------------
     # Tools
@@ -342,7 +207,6 @@ class MainWindow(QMainWindow):
         self.left_toolbar.rect_btn.setChecked(False)
         self.left_toolbar.poly_btn.setChecked(True)
         self.scene.set_tool(ToolMode.POLYGON)
-        # self.update_tool_buttons()
 
     # ---------------------------------------------------------
     # Image loading
@@ -365,8 +229,7 @@ class MainWindow(QMainWindow):
         self.image_paths = files
         self.current_index = 0
 
-        self.frame_spin.setMaximum(len(files) - 1)
-        self.total_label.setText(f"/ {len(files)}")
+        self.bottom_toolbar.set_frame_range(len(files) - 1)
 
         self.load_current_image()
 
@@ -428,8 +291,7 @@ class MainWindow(QMainWindow):
             self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
         )
 
-        self.frame_spin.setMaximum(self.total_frames - 1)
-        self.total_label.setText(f"/ {self.total_frames}")
+        self.bottom_toolbar.set_frame_range(self.total_frames - 1)
 
         self.goto_frame(0)
 
@@ -467,21 +329,35 @@ class MainWindow(QMainWindow):
 
         self.load_annotations()
 
+        # Update bottom toolbar
+        self.bottom_toolbar.set_current_frame(frame_number)
+
     # ---------------------------------------------------------
     # Navigation
     # ---------------------------------------------------------
 
     def next_frame(self):
         if self.cap is not None:
-            if self.frame_spin.value() < self.total_frames - 1:
-                self.frame_spin.setValue(self.frame_spin.value() + 1)
+            if self.bottom_toolbar.get_current_frame() < self.total_frames - 1:
+                self.bottom_toolbar.set_current_frame(
+                    self.bottom_toolbar.get_current_frame() + 1
+                )
+                self.goto_frame(self.bottom_toolbar.get_current_frame())
         elif self.image_paths:
             if self.current_index < len(self.image_paths) - 1:
-                self.frame_spin.setValue(self.current_index + 1)
+                self.current_index += 1
+                self.bottom_toolbar.set_current_frame(self.current_index)
+                self.load_current_image()
 
     def previous_frame(self):
-        if self.frame_spin.value() > 0:
-            self.frame_spin.setValue(self.frame_spin.value() - 1)
+        if self.bottom_toolbar.get_current_frame() > 0:
+            new_frame = self.bottom_toolbar.get_current_frame() - 1
+            self.bottom_toolbar.set_current_frame(new_frame)
+            if self.cap is not None:
+                self.goto_frame(new_frame)
+            elif self.image_paths:
+                self.current_index = new_frame
+                self.load_current_image()
 
     # ---------------------------------------------------------
     # Save / Load
@@ -500,7 +376,7 @@ class MainWindow(QMainWindow):
             return (
                 self.video_path,
                 "video",
-                self.frame_spin.value(),
+                self.bottom_toolbar.get_current_frame(),
             )
 
         if self.image_paths:
@@ -534,7 +410,6 @@ class MainWindow(QMainWindow):
             annotations=self.scene.export_annotations(self.current_layer, path, frame),
         )
 
-        # self.statusBar().showMessage("Annotations saved successfully.", 3000)  # 3 seconds
         information_box(self, message="✅ Annotations saved successfully.")
 
     def load_annotations(self):
@@ -638,18 +513,6 @@ class MainWindow(QMainWindow):
                 ),
             )
 
-    def auto_annotate_ball(self):
-        self.auto_annotate("ball")
-
-    def auto_annotate_court(self):
-        self.auto_annotate("court")
-
-    def auto_annotate_actions(self):
-        self.auto_annotate("actions")
-
-    def auto_annotate_players(self):
-        self.auto_annotate("players")
-
     def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
         if self.cap is None:
             if self.image_paths and frame_number < len(self.image_paths):
@@ -669,11 +532,7 @@ class MainWindow(QMainWindow):
 
         return frame
 
-    def run_batch_inference_on_frame(
-            self,
-            frame_number,
-            model_keys,
-    ):
+    def run_batch_inference_on_frame(self,frame_number,model_keys):
         imported_total = 0
         frame = self.get_frame_by_number(frame_number)
 
@@ -686,8 +545,6 @@ class MainWindow(QMainWindow):
             layer = self.db.get_layer(model_key)
 
             annotations, imported = self.convert_result_to_annotations(result, layer)
-
-            layer = self.db.get_layer(model_key)
             path, media_type, _ = self.current_media_info()
 
             if len(annotations) == 0:
@@ -737,17 +594,22 @@ class MainWindow(QMainWindow):
                 cls = int(box.cls[0])
                 name = result.names[cls].lower()
 
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
+
                 if name not in labels:
                     continue
 
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                Annotation(
-                    media_name=path,
-                    frame_number=frame_number,
-                    shape_type='rectangle',
-                    label=labels[name],
-                    layer=layer,
-                    geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                annotations.append(
+                    Annotation(
+                        media_name=path,
+                        frame_number=frame_number,
+                        shape_type='rectangle',
+                        label=labels[name],
+                        layer=layer,
+                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                    )
                 )
                 imported += 1
 
@@ -755,6 +617,9 @@ class MainWindow(QMainWindow):
         if result.masks is not None:
             for mask, cls in zip(result.masks.xy, result.boxes.cls):
                 name = result.names[int(cls)].lower()
+
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
 
                 if name not in labels:
                     continue
@@ -769,6 +634,5 @@ class MainWindow(QMainWindow):
                         geometry=[[float(x), float(y)] for x, y in mask]
                     )
                 )
-
                 imported += 1
         return annotations, imported
