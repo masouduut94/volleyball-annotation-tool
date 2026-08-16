@@ -24,7 +24,7 @@ from database.db import DatabaseManager
 from config_dialog import ConfigDialog
 from services.auto_annotator import AutoAnnotator
 from services.batch_inference import BatchInferenceDialog
-from ui.layer_sidebar import LayerSidebar
+from ui.left_sidebar import LeftSideBar
 from ui.top_toolbar import TopToolbar
 from ui.bottom_toolbar import BottomToolbar
 from ui.utils import information_box
@@ -67,6 +67,8 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
         QShortcut(QKeySequence("D"), self, activated=self.next_frame)
+        QShortcut(QKeySequence("Q"), self, activated=self.previous_15_frame)
+        QShortcut(QKeySequence("E"), self, activated=self.next_15_frame)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
         QShortcut(QKeySequence("Shift+Delete"), self, activated=self.clear_current_frame_annotations)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=self.open_batch_inference)
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         self.left_toolbar = self._create_left_toolbar()
 
         self.bottom_toolbar = BottomToolbar(self)
+        # self.bottom_toolbar.setMinimumHeight(250)
 
         self.bottom_toolbar.previousFrame.connect(
             self.previous_frame
@@ -177,7 +180,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.bottom_toolbar, 0)
 
     def _create_left_toolbar(self):
-        self.left_toolbar = LayerSidebar(self.db)
+        self.left_toolbar = LeftSideBar(self.db)
         self.left_toolbar.layerChanged.connect(self.layer_changed)
         self.left_toolbar.labelChanged.connect(self.label_changed)
         self.left_toolbar.toolChanged.connect(self.tool_changed)
@@ -504,9 +507,32 @@ class MainWindow(QMainWindow):
                 self.bottom_toolbar.set_current_frame(self.current_index)
                 self.load_current_image()
 
+    def next_15_frame(self):
+        if self.cap is not None:
+            if self.bottom_toolbar.get_current_frame() < self.total_frames - 15:
+                self.bottom_toolbar.set_current_frame(
+                    self.bottom_toolbar.get_current_frame() + 15
+                )
+                self.goto_frame(self.bottom_toolbar.get_current_frame())
+        elif self.image_paths:
+            if self.current_index < len(self.image_paths) - 15:
+                self.current_index += 15
+                self.bottom_toolbar.set_current_frame(self.current_index)
+                self.load_current_image()
+
     def previous_frame(self):
         if self.bottom_toolbar.get_current_frame() > 0:
             new_frame = self.bottom_toolbar.get_current_frame() - 1
+            self.bottom_toolbar.set_current_frame(new_frame)
+            if self.cap is not None:
+                self.goto_frame(new_frame)
+            elif self.image_paths:
+                self.current_index = new_frame
+                self.load_current_image()
+
+    def previous_15_frame(self):
+        if self.bottom_toolbar.get_current_frame()-15 > 0:
+            new_frame = self.bottom_toolbar.get_current_frame() - 15
             self.bottom_toolbar.set_current_frame(new_frame)
             if self.cap is not None:
                 self.goto_frame(new_frame)

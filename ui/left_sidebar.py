@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 from vb_gui.vb_annotator.resources.icons import rectangle_icon, polygon_icon
 
 
-class LayerSidebar(QWidget):
+class LeftSideBar(QWidget):
     """
     Main sidebar widget for annotation controls.
 
@@ -277,7 +277,7 @@ class LayerSidebar(QWidget):
         icon_size = 30
         btn_size = 40
         self.rect_btn = QPushButton()
-        self.rect_btn.setIcon(QIcon("./resources/rectangle.png"))
+        self.rect_btn.setIcon(QIcon("./resources/icons/tools/rectangle.png"))
         self.rect_btn.setContentsMargins(0, 0, 0, 0)
         self.rect_btn.setFixedSize(btn_size, btn_size)
         self.rect_btn.setIconSize(QSize(icon_size, icon_size))
@@ -293,7 +293,7 @@ class LayerSidebar(QWidget):
         """)
 
         self.poly_btn = QPushButton()
-        self.poly_btn.setIcon(QIcon("./resources/pentagon.png"))
+        self.poly_btn.setIcon(QIcon("./resources/icons/tools/pentagon.png"))
         self.poly_btn.setFixedSize(btn_size, btn_size)
         self.poly_btn.setIconSize(QSize(icon_size, icon_size))
         self.poly_btn.setFont(QFont("Arial", 14))

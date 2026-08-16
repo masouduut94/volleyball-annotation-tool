@@ -276,7 +276,7 @@ class RightSidebar(QWidget):
         # Right AI sidebar
         header = SectionHeader(
             "AI Tools",
-            "./resources/AI.png",
+            "./resources/icons/right_sidebar/AI.png",
             self,
         )
         # header.setFont(
@@ -317,21 +317,21 @@ class RightSidebar(QWidget):
         self.ball_row = DetectionRow(
             "ball",
             "Ball segmentation",
-            "./resources/ball.png",
+            "./resources/icons/right_sidebar/ball.png",
             parent=self,
         )
 
         self.players_row = DetectionRow(
             "players",
             "Players detection",
-            "./resources/players.png",
+            "./resources/icons/right_sidebar/players.png",
             parent=self,
         )
 
         self.actions_row = DetectionRow(
             "actions",
             "Actions detection",
-            "./resources/actions.png",
+            "./resources/icons/right_sidebar/actions.png",
             parent=self,
         )
 
@@ -374,7 +374,7 @@ class RightSidebar(QWidget):
         )
 
         self.configure_button.setIcon(
-            QIcon("./resources/cycle.png")
+            QIcon("./resources/icons/right_sidebar/cycle.png")
         )
 
         self.configure_button.setIconSize(
@@ -404,7 +404,7 @@ class RightSidebar(QWidget):
         )
 
         self.settings_button.setIcon(
-            QIcon("./resources/settings.png")
+            QIcon("./resources/icons/right_sidebar/settings.png")
         )
 
         self.settings_button.setFixedHeight(38)
