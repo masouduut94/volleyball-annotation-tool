@@ -79,7 +79,7 @@ class BatchInferenceDialog(QDialog):
 
         self.worker = None
 
-        self.setWindowTitle("AI batch inference")
+        self.setWindowTitle("Configure AI Job")
         self.resize(560, 520)
 
         self.build_ui()
@@ -95,19 +95,17 @@ class BatchInferenceDialog(QDialog):
         # Use models
         # --------------------------------------------------
 
-        title = QLabel("Use models")
+        title = QLabel("Models")
         title.setStyleSheet(
             "font-weight:bold; font-size:14px;"
         )
         layout.addWidget(title)
 
         self.ball_cb = QCheckBox("Ball segmentation")
-        self.court_cb = QCheckBox("Court segmentation")
         self.actions_cb = QCheckBox("Actions detection")
         self.players_cb = QCheckBox("Players detection")
 
         layout.addWidget(self.ball_cb)
-        layout.addWidget(self.court_cb)
         layout.addWidget(self.actions_cb)
         layout.addWidget(self.players_cb)
 
@@ -121,10 +119,6 @@ class BatchInferenceDialog(QDialog):
             "font-weight:bold; font-size:14px;"
         )
         layout.addWidget(layer_title)
-
-        layout.addWidget(
-            QLabel("Court model → Court layer")
-        )
 
         layout.addWidget(
             QLabel("Players model → Players layer")
@@ -242,9 +236,6 @@ class BatchInferenceDialog(QDialog):
 
         if self.ball_cb.isChecked():
             models.append("ball")
-
-        if self.court_cb.isChecked():
-            models.append("court")
 
         if self.actions_cb.isChecked():
             models.append("actions")

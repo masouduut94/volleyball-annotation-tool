@@ -14,7 +14,7 @@ Key Features:
 """
 
 from PyQt6.QtCore import pyqtSignal, QSize
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -274,50 +274,44 @@ class LayerSidebar(QWidget):
         tools = QHBoxLayout()
         tools.setSpacing(8)
 
-        icon_size = 25
-        btn_size = 30
+        icon_size = 30
+        btn_size = 40
         self.rect_btn = QPushButton()
-        self.rect_btn.setIcon(rectangle_icon(size=60))
+        self.rect_btn.setIcon(QIcon("./resources/rectangle.png"))
+        self.rect_btn.setContentsMargins(0, 0, 0, 0)
         self.rect_btn.setFixedSize(btn_size, btn_size)
         self.rect_btn.setIconSize(QSize(icon_size, icon_size))
         self.rect_btn.setFont(QFont("Arial", 14))
         self.rect_btn.setToolTip("Rectangle Tool")
         self.rect_btn.clicked.connect(lambda: self.set_tool("rectangle"))
+        self.rect_btn.setStyleSheet("""
+            QPushButton {
+                text-align: bottom center;
+                padding-top: 0px;
+                padding-bottom: 2px;
+            }
+        """)
 
         self.poly_btn = QPushButton()
-        self.poly_btn.setIcon(polygon_icon(size=100, sides=6))
+        self.poly_btn.setIcon(QIcon("./resources/pentagon.png"))
         self.poly_btn.setFixedSize(btn_size, btn_size)
         self.poly_btn.setIconSize(QSize(icon_size, icon_size))
         self.poly_btn.setFont(QFont("Arial", 14))
         self.poly_btn.setToolTip("Polygon Tool")
         self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
+        self.poly_btn.setStyleSheet("""
+            QPushButton {
+                text-align: bottom center;
+                padding-top: 0px;
+                padding-bottom: 2px;
+            }
+        """)
 
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)
         tools.addStretch()
-
         layout.addLayout(tools)
-
         layout.addWidget(self.separator())
-
-        layout.addWidget(self.section("AI Assist"))
-
-        self.detect_court_btn = QPushButton("Detect court")
-        self.detect_players_btn = QPushButton("Detect players")
-        self.detect_ball_btn = QPushButton("Detect ball")
-        self.detect_actions_btn = QPushButton("Suggest actions")
-        for btn in [
-            self.detect_court_btn,
-            self.detect_players_btn,
-            self.detect_ball_btn,
-            self.detect_actions_btn,
-        ]:
-            btn.setObjectName("aiButton")
-
-        layout.addWidget(self.detect_court_btn)
-        layout.addWidget(self.detect_players_btn)
-        layout.addWidget(self.detect_ball_btn)
-        layout.addWidget(self.detect_actions_btn)
 
         layout.addStretch()
 

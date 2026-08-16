@@ -4,7 +4,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtGui import QAction, QPixmap, QImage, QShortcut, QKeySequence
+from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -28,6 +28,7 @@ from ui.layer_sidebar import LayerSidebar
 from ui.top_toolbar import TopToolbar
 from ui.bottom_toolbar import BottomToolbar
 from ui.utils import information_box
+from ui.right_sidebar import RightSidebar, SectionHeader
 from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
 
 
@@ -75,39 +76,105 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------
 
     def _create_ui(self):
+        # ---------------------------------------------------------
+        # Scene / View
+        # ---------------------------------------------------------
+
         self.scene = AnnotationScene(self.db)
+
         self.view = GraphicsView()
         self.view.setScene(self.scene)
-        self.scene.set_current_layer(self.current_layer)
 
-        # Create toolbars
+        self.view.setMinimumWidth(960)
+
+        self.scene.set_current_layer(
+            self.current_layer
+        )
+
+        # ---------------------------------------------------------
+        # Top toolbar
+        # ---------------------------------------------------------
+
         self.top_toolbar = TopToolbar(self)
         self.addToolBar(self.top_toolbar)
 
+        # ---------------------------------------------------------
+        # Side / bottom toolbars
+        # ---------------------------------------------------------
+
         self.left_toolbar = self._create_left_toolbar()
+
         self.bottom_toolbar = BottomToolbar(self)
 
-        # Connect bottom toolbar signals
-        self.bottom_toolbar.previousFrame.connect(self.previous_frame)
-        self.bottom_toolbar.nextFrame.connect(self.next_frame)
-        self.bottom_toolbar.gotoFrame.connect(self.goto_frame)
+        self.bottom_toolbar.previousFrame.connect(
+            self.previous_frame
+        )
+
+        self.bottom_toolbar.nextFrame.connect(
+            self.next_frame
+        )
+
+        self.bottom_toolbar.gotoFrame.connect(
+            self.goto_frame
+        )
+
+        # ---------------------------------------------------------
+        # Right AI sidebar
+        # ---------------------------------------------------------
+
+        self.right_sidebar = self._create_right_sidebar()
+
+        # IMPORTANT:
+        # Keep the AI sidebar fixed so it doesn't steal
+        # horizontal space from the image.
+        self.right_sidebar.setFixedWidth(280)
+
+        # ---------------------------------------------------------
+        # Central widget
+        # ---------------------------------------------------------
 
         central = QWidget()
         self.setCentralWidget(central)
-        self.setStyleSheet(
+
+        central.setStyleSheet(
             """
-            background-color: #1E1F24;
+            QWidget {
+                background-color: #1E1F24;
+            }
             """
         )
 
         main_layout = QVBoxLayout(central)
+
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        main_layout.setSpacing(0)
+
+        # ---------------------------------------------------------
+        # Main content
+        # ---------------------------------------------------------
+
         content_layout = QHBoxLayout()
 
-        content_layout.addWidget(self.left_toolbar)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
+        content_layout.setSpacing(0)
+
+        # Left toolbar
+        content_layout.addWidget(self.left_toolbar, 0)
+
+        # Image view
+
+        # Stretch = 1 means:
+        # "Give the view all remaining horizontal space."
         content_layout.addWidget(self.view, 1)
 
-        main_layout.addLayout(content_layout)
-        main_layout.addWidget(self.bottom_toolbar)
+        content_layout.addWidget(self.right_sidebar, 0)
+
+        main_layout.addLayout(content_layout, 1)
+
+        # Bottom toolbar
+        main_layout.addWidget(self.bottom_toolbar, 0)
 
     def _create_left_toolbar(self):
         self.left_toolbar = LayerSidebar(self.db)
@@ -122,28 +189,116 @@ class MainWindow(QMainWindow):
             self.layer_visibility_changed
         )
 
-        # Auto-annotate adjustment for automatic layer change.
-        self.left_toolbar.detect_court_btn.clicked.connect(
-            lambda: self.run_layer_ai("court", "court")
-        )
-
-        self.left_toolbar.detect_players_btn.clicked.connect(
-            lambda: self.run_layer_ai("players", "players")
-        )
-
-        self.left_toolbar.detect_ball_btn.clicked.connect(
-            lambda: self.run_layer_ai("ball", "ball")
-        )
-
-        self.left_toolbar.detect_actions_btn.clicked.connect(
-            lambda: self.run_layer_ai("actions", "actions")
-        )
-
         return self.left_toolbar
+
+    def _create_right_sidebar(self):
+        self.right_sidebar = RightSidebar(
+            model_status=self.get_ai_model_status(),
+            parent=self,
+        )
+
+        self.right_sidebar.detectRequested.connect(
+            self.run_ai_detection
+        )
+
+        self.right_sidebar.configureJobRequested.connect(
+            self.open_batch_inference
+        )
+
+        self.right_sidebar.settingsRequested.connect(
+            self.open_config
+        )
+
+        return self.right_sidebar
+
+    def get_ai_model_status(self):
+        """
+        Return whether the required AI models are configured.
+
+        Returns:
+            dict:
+                {
+                    "ball": bool,
+                    "players": bool,
+                    "actions": bool,
+                }
+        """
+
+        return {
+            "ball": self.auto_annotator.ensure_loaded("ball"),
+            "players": self.auto_annotator.ensure_loaded("players"),
+            "actions": self.auto_annotator.ensure_loaded("actions"),
+        }
 
     def open_config(self):
         dialog = ConfigDialog(self.db, self)
-        dialog.exec()
+        if dialog.exec():
+            self.refresh_ai_sidebar()
+
+    def refresh_ai_sidebar(self):
+        """
+        Refresh the green/status indicators in the AI sidebar.
+        """
+
+        if not hasattr(self, "right_sidebar"):
+            return
+
+        self.right_sidebar.model_status = (
+            self.get_ai_model_status()
+        )
+
+        self.right_sidebar.refresh_status()
+
+    def run_ai_detection(self, model_name):
+        """
+        Run AI detection for the current frame.
+        """
+
+        # ---------------------------------------------------------
+        # Make sure the model exists
+        # ---------------------------------------------------------
+
+        if not self.auto_annotator.ensure_loaded(model_name):
+            QMessageBox.warning(
+                self,
+                "AI Model Not Configured",
+                (
+                    f"The {model_name} model has not been configured.\n\n"
+                    "Please open Settings and configure the model first."
+                ),
+            )
+
+            self.open_config()
+            return
+
+        # ---------------------------------------------------------
+        # Map model -> layer
+        # ---------------------------------------------------------
+
+        layer_map = {
+            "ball": "ball",
+            "players": "players",
+            "actions": "actions",
+        }
+
+        layer_name = layer_map.get(model_name)
+
+        if not layer_name:
+            QMessageBox.warning(
+                self,
+                "Unknown Model",
+                f"Unknown AI model: {model_name}",
+            )
+            return
+
+        # ---------------------------------------------------------
+        # Run inference
+        # ---------------------------------------------------------
+
+        self.run_layer_ai(
+            model_name,
+            layer_name,
+        )
 
     def run_layer_ai(self, layer_name, model_key):
         self.left_toolbar.set_layer(layer_name)
@@ -532,7 +687,7 @@ class MainWindow(QMainWindow):
 
         return frame
 
-    def run_batch_inference_on_frame(self,frame_number,model_keys):
+    def run_batch_inference_on_frame(self, frame_number, model_keys):
         imported_total = 0
         frame = self.get_frame_by_number(frame_number)
 

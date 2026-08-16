@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QMenu, QMessageBox,
 )
 
-from shape_utils import AnnotationRectItem, AnnotationPolygonItem
+from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
 from database.db import DatabaseManager
 from vb_gui.vb_annotator.database.data import Layer, Label, Annotation
 

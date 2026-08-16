@@ -1,12 +1,9 @@
-# Import Qt GUI components for colors, pens, brushes, and painting
 from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QFont
-# Import Qt Widgets for graphics items
 from PyQt6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsPolygonItem,
     QGraphicsTextItem,
 )
-# Import Qt core components for constants, points, and rectangles
 from PyQt6.QtCore import Qt, QPointF, QRectF
 
 
@@ -27,9 +24,7 @@ class BaseAnnotationItem:
         # Layer management for organizing annotations
         self.layer_name = None
 
-        # Default annotation color (green with full opacity)
         self.annotation_color = QColor('#00FF00')
-        # Text label displayed on the annotation
         self.label = ''
 
         # Transparency levels for fill colors (40 = ~16% opacity, 80 = ~31% opacity)
