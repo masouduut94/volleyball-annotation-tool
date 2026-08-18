@@ -103,16 +103,17 @@ class LeftSideBar(QWidget):
 
             QLabel#title {
                 font-size: 18px;
+                padding: 10px;
+                margin-top: 10px;
                 font-weight: bold;
                 color: #F1F3F5;
             }
 
             QLabel#section {
-                font-size: 11px;
+                font-size: 13px;
                 font-weight: bold;
                 color: #9AA0A6;
                 margin-top: 10px;
-                letter-spacing: 0.5px;
             }
 
             QFrame#line {
@@ -126,7 +127,7 @@ class LeftSideBar(QWidget):
             QPushButton {
                 background: transparent;
                 border: none;
-                padding: 8px 10px;
+                padding: 10px 10px;
                 text-align: left;
                 border-radius: 8px;
                 color: #E6E6E6;
@@ -171,7 +172,7 @@ class LeftSideBar(QWidget):
                 border: 1px solid #3A3F4B;
                 border-radius: 10px;
                 color: #E6E6E6;
-                margin=0px;
+                margin: 0px;
                 min-width: 42px;
                 max-width: 42px;
                 min-height: 42px;
@@ -186,28 +187,12 @@ class LeftSideBar(QWidget):
                 background: #E95420;
                 border: 1px solid #E95420;
                 border-radius: 10px;
-                margin=0px;
+                margin: 0px;
                 color: white;
                 min-width: 42px;
                 max-width: 42px;
                 min-height: 42px;
                 max-height: 42px;
-            }
-
-            /* ---------- AI buttons ---------- */
-
-            QPushButton#aiButton {
-                background: #2C313A;
-                border: 1px solid #3A3F4B;
-                border-radius: 10px;
-                padding: 10px;
-                text-align: left;
-                color: #E6E6E6;
-            }
-
-            QPushButton#aiButton:hover {
-                background: #383C47;
-                border-color: #E95420;
             }
 
             /* ---------- Tool buttons ---------- */
@@ -231,14 +216,12 @@ class LeftSideBar(QWidget):
                 font-size: 12px;
                 font-weight: 600;
             }
-
-
-
+            
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(2)
 
         title = QLabel("Annotation")
         title.setObjectName("title")
@@ -262,8 +245,8 @@ class LeftSideBar(QWidget):
 
         self.labels_container = QWidget()
         self.labels_layout = QVBoxLayout(self.labels_container)
-        self.labels_layout.setContentsMargins(0, 0, 0, 0)
-        self.labels_layout.setSpacing(4)
+        self.labels_layout.setContentsMargins(5, 5, 5, 5)
+        self.labels_layout.setSpacing(5)
 
         layout.addWidget(self.labels_container)
 

@@ -370,11 +370,11 @@ class RightSidebar(QWidget):
         # -----------------------------------------------------
 
         self.configure_button = QPushButton(
-            "Configure Job"
+            "Quick Annotate"
         )
 
         self.configure_button.setIcon(
-            QIcon("./resources/icons/right_sidebar/cycle.png")
+            QIcon("./resources/icons/right_sidebar/thunder.png")
         )
 
         self.configure_button.setIconSize(
@@ -400,7 +400,7 @@ class RightSidebar(QWidget):
         # -----------------------------------------------------
 
         self.settings_button = QPushButton(
-            "Settings"
+            "Models Config"
         )
 
         self.settings_button.setIcon(
