@@ -29,9 +29,7 @@ def annotation_key(ann: Annotation):
     )
 
 
-def remove_duplicate_annotations(
-        annotations: list[Annotation],
-) -> list[Annotation]:
+def remove_duplicate_annotations(annotations: list[Annotation]) -> list[Annotation]:
     seen = set()
     unique = []
 
@@ -195,6 +193,64 @@ class DatabaseManager:
         with self.Session() as session:
             return session.query(Media).order_by(Media.created_at.desc()).all()
 
+    def get_media_annotations(
+            self,
+            media_path: str,
+    ) -> List[Annotation]:
+
+        with self.Session() as session:
+
+            media = (
+                session.query(Media)
+                .filter(Media.path == media_path)
+                .first()
+            )
+
+            if media is None:
+                return []
+
+            records = (
+                session.query(SQLAAnnotation)
+                .options(
+                    joinedload(SQLAAnnotation.layer),
+                    joinedload(SQLAAnnotation.label),
+                )
+                .filter(
+                    SQLAAnnotation.media_id == media.id
+                )
+                .all()
+            )
+
+            annotations = []
+
+            for r in records:
+                layer_dc = Layer(
+                    layer_id=r.layer.id,
+                    name=r.layer.name,
+                    labels=[],
+                )
+
+                label_dc = Label(
+                    label_id=r.label.id,
+                    name=r.label.name,
+                    color=r.label.color,
+                    layer=r.layer.name,
+                )
+
+                annotations.append(
+                    Annotation(
+                        annotation_id=r.id,
+                        media_name=media_path,
+                        layer=layer_dc,
+                        label=label_dc,
+                        frame_number=r.frame_number,
+                        shape_type=r.shape_type,
+                        geometry=json.loads(r.geometry),
+                    )
+                )
+
+            return annotations
+
     # ------------------------------------------------------------------
     # Annotations - Updated with dataclass support.
     # ------------------------------------------------------------------
@@ -335,18 +391,6 @@ class DatabaseManager:
             ).delete()
 
             session.commit()
-
-    def update_annotation_geometry(self, annotation_id: int, new_geometry: dict) -> bool:
-        """Update the geometry of an existing annotation."""
-        with self.Session() as session:
-            annotation = session.get(SQLAAnnotation, annotation_id)
-            if not annotation:
-                return False
-
-            annotation.geometry = json.dumps(new_geometry)
-            annotation.updated_at = datetime.utcnow()
-            session.commit()
-            return True
 
     # ------------------------------------------------------------------
     # AI models

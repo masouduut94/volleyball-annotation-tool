@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QLabel,
-    QMessageBox
+    QMessageBox, QDialog
 )
 
 from graphics_view import GraphicsView
@@ -24,13 +24,16 @@ from database.db import DatabaseManager
 from config_dialog import ConfigDialog
 from services.auto_annotator import AutoAnnotator
 from services.batch_inference import BatchInferenceDialog
+from services.yolo_exporter import YOLOExporter
 from ui.left_sidebar import LeftSideBar
 from ui.top_toolbar import TopToolbar
 from ui.bottom_toolbar import BottomToolbar
 from ui.utils import information_box
 from ui.right_sidebar import RightSidebar, SectionHeader
 from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
+from PyQt6.QtWidgets import QMessageBox
 
+from ui.export_dialog import YOLOExportDialog
 
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
@@ -817,3 +820,49 @@ class MainWindow(QMainWindow):
                 )
                 imported += 1
         return annotations, imported
+
+    def export_yolo(self):
+
+        dialog = YOLOExportDialog(
+            self.db,
+            self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        settings = dialog.get_settings()
+
+        if not settings:
+            return
+
+        try:
+
+            exporter = YOLOExporter(
+                self.db
+            )
+
+            exporter.export(
+                output_dir=settings["output_dir"],
+                mode=settings["mode"],
+                output_format=settings["format"],
+                selected_layers=settings["layers"],
+                selected_labels=settings["labels"],
+                selected_videos=settings["videos"],
+            )
+
+        except Exception as e:
+
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Could not export dataset:\n\n{e}",
+            )
+
+            return
+
+        QMessageBox.information(
+            self,
+            "Export Complete",
+            "YOLO dataset was exported successfully.",
+        )
