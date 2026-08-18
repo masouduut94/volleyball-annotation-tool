@@ -10,12 +10,8 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QToolBar,
     QFileDialog,
-    QPushButton,
-    QSpinBox,
-    QLabel,
-    QMessageBox, QDialog
+    QDialog
 )
 
 from graphics_view import GraphicsView
@@ -29,11 +25,26 @@ from ui.left_sidebar import LeftSideBar
 from ui.top_toolbar import TopToolbar
 from ui.bottom_toolbar import BottomToolbar
 from ui.utils import information_box
-from ui.right_sidebar import RightSidebar, SectionHeader
+from ui.right_sidebar import RightSidebar
 from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
 from PyQt6.QtWidgets import QMessageBox
 
 from ui.export_dialog import YOLOExportDialog
+from PyQt6.QtCore import QThread
+from PyQt6.QtWidgets import (
+    QDialog,
+    QMessageBox,
+)
+
+from ui.export_dialog import YOLOExportDialog
+from ui.export_progress_dialog import (
+    ExportProgressDialog,
+)
+from services.yolo_export_worker import (
+    YOLOExportWorker,
+)
+
+
 
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
@@ -828,7 +839,10 @@ class MainWindow(QMainWindow):
             self,
         )
 
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if (
+                dialog.exec()
+                != QDialog.DialogCode.Accepted
+        ):
             return
 
         settings = dialog.get_settings()
@@ -836,33 +850,106 @@ class MainWindow(QMainWindow):
         if not settings:
             return
 
-        try:
+        self.export_progress_dialog = (
+            ExportProgressDialog(self)
+        )
 
-            exporter = YOLOExporter(
-                self.db
+        self.export_thread = QThread(
+            self
+        )
+
+        self.export_worker = (
+            YOLOExportWorker(
+                self.db,
+                settings,
             )
+        )
 
-            exporter.export(
-                output_dir=settings["output_dir"],
-                mode=settings["mode"],
-                output_format=settings["format"],
-                selected_layers=settings["layers"],
-                selected_labels=settings["labels"],
-                selected_videos=settings["videos"],
-            )
+        self.export_worker.moveToThread(
+            self.export_thread
+        )
 
-        except Exception as e:
+        # ----------------------------------------------------------
+        # Signals
+        # ----------------------------------------------------------
 
-            QMessageBox.critical(
-                self,
-                "Export Failed",
-                f"Could not export dataset:\n\n{e}",
-            )
+        self.export_thread.started.connect(
+            self.export_worker.run
+        )
 
-            return
+        self.export_worker.progress.connect(
+            self.export_progress_dialog.set_progress
+        )
+
+        self.export_progress_dialog.cancel_button.clicked.connect(
+            self.export_worker.cancel
+        )
+
+        self.export_worker.finished.connect(
+            self._export_finished
+        )
+
+        self.export_worker.cancelled.connect(
+            self._export_cancelled
+        )
+
+        self.export_worker.error.connect(
+            self._export_error
+        )
+
+        # Cleanup.
+        self.export_worker.finished.connect(
+            self.export_thread.quit
+        )
+
+        self.export_worker.cancelled.connect(
+            self.export_thread.quit
+        )
+
+        self.export_worker.error.connect(
+            self.export_thread.quit
+        )
+
+        self.export_thread.finished.connect(
+            self.export_worker.deleteLater
+        )
+
+        self.export_thread.finished.connect(
+            self.export_thread.deleteLater
+        )
+
+        # ----------------------------------------------------------
+        # Start
+        # ----------------------------------------------------------
+
+        self.export_progress_dialog.show()
+
+        self.export_thread.start()
+
+    def _export_finished(self):
+
+        self.export_progress_dialog.set_finished()
 
         QMessageBox.information(
             self,
             "Export Complete",
             "YOLO dataset was exported successfully.",
+        )
+
+        self.export_progress_dialog.close()
+
+    def _export_cancelled(self):
+
+        self.export_progress_dialog.set_cancelled()
+
+        self.export_progress_dialog.close()
+
+    def _export_error(self, message):
+
+        self.export_progress_dialog.close()
+
+        QMessageBox.critical(
+            self,
+            "Export Failed",
+            f"Could not export YOLO dataset:\n\n{message}",
         )
