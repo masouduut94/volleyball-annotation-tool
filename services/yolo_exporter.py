@@ -54,7 +54,7 @@ class YOLOExporter:
 
                 self._export_dataset(
                     dataset_dir=(
-                        output_dir / "dataset"
+                            output_dir / "dataset"
                     ),
                     output_format=output_format,
                     selected_layers=selected_layers,
@@ -71,7 +71,7 @@ class YOLOExporter:
                 for layer_name in selected_layers:
 
                     if self._is_cancelled(
-                        cancel_callback
+                            cancel_callback
                     ):
                         return False
 
@@ -87,7 +87,7 @@ class YOLOExporter:
 
                     self._export_dataset(
                         dataset_dir=(
-                            output_dir / layer_name
+                                output_dir / layer_name
                         ),
                         output_format=output_format,
                         selected_layers=[
@@ -130,27 +130,27 @@ class YOLOExporter:
         )
 
         images_train_dir = (
-            dataset_dir
-            / "images"
-            / "train"
+                dataset_dir
+                / "images"
+                / "train"
         )
 
         labels_train_dir = (
-            dataset_dir
-            / "labels"
-            / "train"
+                dataset_dir
+                / "labels"
+                / "train"
         )
 
         images_val_dir = (
-            dataset_dir
-            / "images"
-            / "val"
+                dataset_dir
+                / "images"
+                / "val"
         )
 
         labels_val_dir = (
-            dataset_dir
-            / "labels"
-            / "val"
+                dataset_dir
+                / "labels"
+                / "val"
         )
 
         images_train_dir.mkdir(
@@ -164,7 +164,6 @@ class YOLOExporter:
         )
 
         if validation_ratio > 0:
-
             images_val_dir.mkdir(
                 parents=True,
                 exist_ok=True,
@@ -184,7 +183,7 @@ class YOLOExporter:
         for video_path in selected_videos:
 
             if self._is_cancelled(
-                cancel_callback
+                    cancel_callback
             ):
                 return
 
@@ -197,14 +196,14 @@ class YOLOExporter:
             for ann in annotations:
 
                 if (
-                    ann.layer.name
-                    not in selected_layers
+                        ann.layer.name
+                        not in selected_layers
                 ):
                     continue
 
                 if (
-                    ann.layer.name,
-                    ann.label.name,
+                        ann.layer.name,
+                        ann.label.name,
                 ) not in selected_labels:
                     continue
 
@@ -222,7 +221,6 @@ class YOLOExporter:
         for ann in all_annotations:
 
             if ann.label.name not in class_names:
-
                 class_names[
                     ann.label.name
                 ] = len(class_names)
@@ -234,7 +232,6 @@ class YOLOExporter:
         grouped = {}
 
         for ann in all_annotations:
-
             key = (
                 ann.media_name,
                 ann.frame_number,
@@ -290,15 +287,9 @@ class YOLOExporter:
         # Validation samples are NOT augmented.
         # ------------------------------------------------------
 
-        augmentation_count = len(
-            augmentations
-        )
+        augmentation_count = len(augmentations)
 
-        total_work = (
-            len(train_samples)
-            * (1 + augmentation_count)
-            + len(val_samples)
-        )
+        total_work = len(train_samples) * (1 + augmentation_count) + len(val_samples)
 
         completed = 0
 
@@ -307,12 +298,12 @@ class YOLOExporter:
         # ------------------------------------------------------
 
         for sample_index, (
-            (video_path, frame_number),
-            annotations,
+                (video_path, frame_number),
+                annotations,
         ) in enumerate(train_samples):
 
             if self._is_cancelled(
-                cancel_callback
+                    cancel_callback
             ):
                 return
 
@@ -330,11 +321,7 @@ class YOLOExporter:
 
             completed += 1
 
-            self._report_progress(
-                progress_callback,
-                completed,
-                total_work,
-            )
+            self._report_progress(progress_callback, completed, total_work)
 
             if result is None:
                 continue
@@ -346,12 +333,12 @@ class YOLOExporter:
             # --------------------------------------------------
 
             for aug_index, augmentation in enumerate(
-                augmentations,
-                start=1,
+                    augmentations,
+                    start=1,
             ):
 
                 if self._is_cancelled(
-                    cancel_callback
+                        cancel_callback
                 ):
                     return
 
@@ -369,23 +356,19 @@ class YOLOExporter:
 
                 completed += 1
 
-                self._report_progress(
-                    progress_callback,
-                    completed,
-                    total_work,
-                )
+                self._report_progress(progress_callback, completed, total_work)
 
         # ------------------------------------------------------
         # Export validation samples
         # ------------------------------------------------------
 
         for (
-            (video_path, frame_number),
-            annotations,
+                (video_path, frame_number),
+                annotations,
         ) in val_samples:
 
             if self._is_cancelled(
-                cancel_callback
+                    cancel_callback
             ):
                 return
 
@@ -402,11 +385,7 @@ class YOLOExporter:
 
             completed += 1
 
-            self._report_progress(
-                progress_callback,
-                completed,
-                total_work,
-            )
+            self._report_progress(progress_callback, completed, total_work)
 
         # ------------------------------------------------------
         # data.yaml
@@ -421,7 +400,6 @@ class YOLOExporter:
         }
 
         if validation_ratio > 0:
-
             data["val"] = "images/val"
 
         data["task"] = (
@@ -431,9 +409,9 @@ class YOLOExporter:
         )
 
         with open(
-            dataset_dir / "data.yaml",
-            "w",
-            encoding="utf-8",
+                dataset_dir / "data.yaml",
+                "w",
+                encoding="utf-8",
         ) as f:
 
             yaml.safe_dump(
@@ -465,12 +443,12 @@ class YOLOExporter:
         )
 
         image_path = (
-            image_dir / image_name
+                image_dir / image_name
         )
 
         label_path = (
-            label_dir
-            / f"{Path(image_name).stem}.txt"
+                label_dir
+                / f"{Path(image_name).stem}.txt"
         )
 
         frame = self._read_frame(
@@ -523,10 +501,7 @@ class YOLOExporter:
             augmentation_index,
     ):
 
-        frame = self._read_frame(
-            video_path,
-            frame_number,
-        )
+        frame = self._read_frame(video_path, frame_number)
 
         if frame is None:
             return
@@ -538,10 +513,7 @@ class YOLOExporter:
         transformed_annotations = []
 
         for ann in annotations:
-
-            transformed_annotations.append(
-                self._copy_annotation(ann)
-            )
+            transformed_annotations.append(self._copy_annotation(ann))
 
         # ------------------------------------------------------
         # Apply augmentation
@@ -549,29 +521,18 @@ class YOLOExporter:
 
         if augmentation == "brightness_contrast":
 
-            frame = self._augment_brightness_contrast(
-                frame
-            )
+            frame = self._augment_brightness_contrast(frame)
 
         elif augmentation == "color_jitter":
 
-            frame = self._augment_color_jitter(
-                frame
-            )
+            frame = self._augment_color_jitter(frame)
 
         elif augmentation == "horizontal_flip":
 
-            frame = cv2.flip(
-                frame,
-                1,
-            )
+            frame = cv2.flip(frame, 1)
 
             for ann in transformed_annotations:
-
-                self._flip_annotation_horizontal(
-                    ann,
-                    width,
-                )
+                self._flip_annotation_horizontal(ann, width)
 
         lines = self._build_yolo_labels(
             annotations=transformed_annotations,
@@ -584,30 +545,16 @@ class YOLOExporter:
         if not lines:
             return
 
-        image_name = self._image_name(
-            video_path,
-            frame_number,
-            f"_aug_{augmentation_index}",
-        )
+        image_name = self._image_name(video_path, frame_number, f"_aug_{augmentation}",
+                                      )
 
-        image_path = (
-            image_dir / image_name
-        )
+        image_path = image_dir / image_name
 
-        label_path = (
-            label_dir
-            / f"{Path(image_name).stem}.txt"
-        )
+        label_path = label_dir / f"{Path(image_name).stem}.txt"
 
-        cv2.imwrite(
-            str(image_path),
-            frame,
-        )
+        cv2.imwrite(str(image_path), frame)
 
-        label_path.write_text(
-            "\n".join(lines),
-            encoding="utf-8",
-        )
+        label_path.write_text("\n".join(lines), encoding="utf-8")
 
     # ==========================================================
     # YOLO labels
@@ -636,44 +583,23 @@ class YOLOExporter:
 
             if output_format == "segmentation":
 
-                points = self._polygon_points(
-                    ann
-                )
+                points = self._polygon_points(ann)
 
                 if len(points) < 3:
                     continue
 
-                values = [
-                    str(class_id)
-                ]
+                values = [str(class_id)]
 
                 for x, y in points:
+                    x = max(0.0, min(float(x), width))
 
-                    x = max(
-                        0.0,
-                        min(float(x), width)
-                    )
+                    y = max(0.0, min(float(y), height))
 
-                    y = max(
-                        0.0,
-                        min(float(y), height)
-                    )
+                    values.append(self._fmt(x / width))
 
-                    values.append(
-                        self._fmt(
-                            x / width
-                        )
-                    )
+                    values.append(self._fmt(y / height))
 
-                    values.append(
-                        self._fmt(
-                            y / height
-                        )
-                    )
-
-                lines.append(
-                    " ".join(values)
-                )
+                lines.append(" ".join(values))
 
             # --------------------------------------------------
             # Detection
@@ -681,11 +607,7 @@ class YOLOExporter:
 
             else:
 
-                bbox = self._bbox(
-                    ann,
-                    width,
-                    height,
-                )
+                bbox = self._bbox(ann, width, height)
 
                 if bbox is None:
                     continue
@@ -710,31 +632,17 @@ class YOLOExporter:
     # Frame extraction
     # ==========================================================
 
-    def _read_frame(
-            self,
-            video_path,
-            frame_number,
-    ):
+    def _read_frame(self, video_path, frame_number):
 
         if video_path not in self.captures:
+            self.captures[video_path] = cv2.VideoCapture(video_path)
 
-            self.captures[
-                video_path
-            ] = cv2.VideoCapture(
-                video_path
-            )
-
-        cap = self.captures[
-            video_path
-        ]
+        cap = self.captures[video_path]
 
         if not cap.isOpened():
             return None
 
-        cap.set(
-            cv2.CAP_PROP_POS_FRAMES,
-            frame_number,
-        )
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
         ok, frame = cap.read()
 
@@ -756,53 +664,25 @@ class YOLOExporter:
     # Augmentation
     # ==========================================================
 
-    def _augment_brightness_contrast(
-            self,
-            image,
-    ):
+    def _augment_brightness_contrast(self, image):
 
         # Random but deliberately moderate values.
-        alpha = self.random.uniform(
-            0.85,
-            1.15,
-        )
+        alpha = self.random.uniform(0.85, 1.15)
 
-        beta = self.random.uniform(
-            -25,
-            25,
-        )
+        beta = self.random.uniform(-25, 25)
 
-        return cv2.convertScaleAbs(
-            image,
-            alpha=alpha,
-            beta=beta,
-        )
+        return cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
 
-    def _augment_color_jitter(
-            self,
-            image,
-    ):
+    def _augment_color_jitter(self, image):
 
-        hsv = cv2.cvtColor(
-            image,
-            cv2.COLOR_BGR2HSV,
-        )
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
         # Moderate random changes.
-        saturation_scale = self.random.uniform(
-            0.85,
-            1.15,
-        )
+        saturation_scale = self.random.uniform(0.85, 1.15)
 
-        value_scale = self.random.uniform(
-            0.90,
-            1.10,
-        )
+        value_scale = self.random.uniform(0.90, 1.10)
 
-        hue_shift = self.random.randint(
-            -8,
-            8,
-        )
+        hue_shift = self.random.randint(-8, 8)
 
         hsv = hsv.astype("float32")
 
@@ -813,7 +693,7 @@ class YOLOExporter:
         hsv[:, :, 2] *= value_scale
 
         hsv[:, :, 0] = (
-            hsv[:, :, 0] % 180
+                hsv[:, :, 0] % 180
         )
 
         hsv[:, :, 1] = (
@@ -856,9 +736,9 @@ class YOLOExporter:
             width = float(g["width"])
 
             g["x"] = (
-                image_width
-                - x
-                - width
+                    image_width
+                    - x
+                    - width
             )
 
         elif ann.shape_type == "polygon":
@@ -866,7 +746,6 @@ class YOLOExporter:
             flipped = []
 
             for x, y in ann.geometry:
-
                 flipped.append(
                     (
                         image_width - float(x),
@@ -884,7 +763,6 @@ class YOLOExporter:
     def _polygon_points(ann):
 
         if ann.shape_type == "polygon":
-
             return [
                 (
                     float(x),
@@ -894,7 +772,6 @@ class YOLOExporter:
             ]
 
         if ann.shape_type == "rectangle":
-
             g = ann.geometry
 
             x = float(g["x"])
@@ -981,20 +858,20 @@ class YOLOExporter:
             return None
 
         xc = (
-            (x1 + x2) / 2
-        ) / width
+                     (x1 + x2) / 2
+             ) / width
 
         yc = (
-            (y1 + y2) / 2
-        ) / height
+                     (y1 + y2) / 2
+             ) / height
 
         wn = (
-            x2 - x1
-        ) / width
+                     x2 - x1
+             ) / width
 
         hn = (
-            y2 - y1
-        ) / height
+                     y2 - y1
+             ) / height
 
         return (
             xc,
@@ -1041,11 +918,7 @@ class YOLOExporter:
         )
 
     @staticmethod
-    def _report_progress(
-            callback,
-            completed,
-            total,
-    ):
+    def _report_progress(callback, completed, total):
 
         if callback is None:
             return
@@ -1054,10 +927,6 @@ class YOLOExporter:
             callback(100)
             return
 
-        percentage = int(
-            completed * 100 / total
-        )
+        percentage = int(completed * 100 / total)
 
-        callback(
-            min(100, percentage)
-        )
+        callback(min(100, percentage))

@@ -1,49 +1,30 @@
-# main_window.py (updated version)
-
-from typing import Optional
-
 import cv2
 import numpy as np
+from typing import Optional
+
+from PyQt6.QtCore import QThread
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
-from PyQt6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFileDialog,
-    QDialog
-)
+from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QDialog, QMessageBox
 
 from graphics_view import GraphicsView
 from graphics_scene import AnnotationScene, ToolMode
+
 from database.db import DatabaseManager
+from database.data import Annotation, Layer
+
 from config_dialog import ConfigDialog
+
 from services.auto_annotator import AutoAnnotator
+from services.yolo_export_worker import YOLOExportWorker
 from services.batch_inference import BatchInferenceDialog
-from services.yolo_exporter import YOLOExporter
-from ui.left_sidebar import LeftSideBar
-from ui.top_toolbar import TopToolbar
-from ui.bottom_toolbar import BottomToolbar
+
 from ui.utils import information_box
+from ui.top_toolbar import TopToolbar
+from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
-from vb_gui.vb_annotator.database.data import Label, Annotation, Layer
-from PyQt6.QtWidgets import QMessageBox
-
+from ui.bottom_toolbar import BottomToolbar
 from ui.export_dialog import YOLOExportDialog
-from PyQt6.QtCore import QThread
-from PyQt6.QtWidgets import (
-    QDialog,
-    QMessageBox,
-)
-
-from ui.export_dialog import YOLOExportDialog
-from ui.export_progress_dialog import (
-    ExportProgressDialog,
-)
-from services.yolo_export_worker import (
-    YOLOExportWorker,
-)
-
+from ui.export_progress_dialog import ExportProgressDialog
 
 
 class MainWindow(QMainWindow):
@@ -312,10 +293,7 @@ class MainWindow(QMainWindow):
         # Run inference
         # ---------------------------------------------------------
 
-        self.run_layer_ai(
-            model_name,
-            layer_name,
-        )
+        self.run_layer_ai(model_name, layer_name)
 
     def run_layer_ai(self, layer_name, model_key):
         self.left_toolbar.set_layer(layer_name)
@@ -362,7 +340,7 @@ class MainWindow(QMainWindow):
                 frame_number=frame,
             )
 
-            self.scene.load_annotations(annotations=annotations, layer_name=layer_name)
+            self.scene.load_annotations(annotations, layer_name)
 
         # Update the scene's active layer
         self.scene.set_current_layer(self.current_layer)
@@ -545,7 +523,7 @@ class MainWindow(QMainWindow):
                 self.load_current_image()
 
     def previous_15_frame(self):
-        if self.bottom_toolbar.get_current_frame()-15 > 0:
+        if self.bottom_toolbar.get_current_frame() - 15 > 0:
             new_frame = self.bottom_toolbar.get_current_frame() - 15
             self.bottom_toolbar.set_current_frame(new_frame)
             if self.cap is not None:
@@ -624,10 +602,7 @@ class MainWindow(QMainWindow):
             frame_number=frame,
         )
 
-        self.scene.load_annotations(
-            annotations=annotations,
-            layer_name=self.current_layer
-        )
+        self.scene.load_annotations(annotations, self.current_layer)
 
     def layer_changed(self, layer_name):
         self.current_layer = layer_name
@@ -642,10 +617,7 @@ class MainWindow(QMainWindow):
 
         color = labels[label_name].color
 
-        self.scene.set_current_label(
-            label_name,
-            color,
-        )
+        self.scene.set_current_label(label_name, color)
 
     def tool_changed(self, tool_name):
         if tool_name == "rectangle":
@@ -683,11 +655,7 @@ class MainWindow(QMainWindow):
             result = self.auto_annotator.predict(model_key, frame)
 
         except RuntimeError as e:
-            QMessageBox.warning(
-                self,
-                "Model not configured",
-                str(e),
-            )
+            QMessageBox.warning(self, "Model not configured", str(e))
             return
 
         layer = self.db.get_layer(self.current_layer)
@@ -715,10 +683,7 @@ class MainWindow(QMainWindow):
                 image = cv2.imread(path)
                 return image
 
-        self.cap.set(
-            cv2.CAP_PROP_POS_FRAMES,
-            frame_number,
-        )
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
         ok, frame = self.cap.read()
 
@@ -732,10 +697,7 @@ class MainWindow(QMainWindow):
         frame = self.get_frame_by_number(frame_number)
 
         for model_key in model_keys:
-            result = self.auto_annotator.predict(
-                model_key,
-                frame,
-            )
+            result = self.auto_annotator.predict(model_key, frame)
 
             layer = self.db.get_layer(model_key)
 
@@ -834,15 +796,9 @@ class MainWindow(QMainWindow):
 
     def export_yolo(self):
 
-        dialog = YOLOExportDialog(
-            self.db,
-            self,
-        )
+        dialog = YOLOExportDialog(self.db, self)
 
-        if (
-                dialog.exec()
-                != QDialog.DialogCode.Accepted
-        ):
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         settings = dialog.get_settings()
@@ -850,73 +806,40 @@ class MainWindow(QMainWindow):
         if not settings:
             return
 
-        self.export_progress_dialog = (
-            ExportProgressDialog(self)
-        )
+        self.export_progress_dialog = ExportProgressDialog(self)
 
-        self.export_thread = QThread(
-            self
-        )
+        self.export_thread = QThread(self)
 
-        self.export_worker = (
-            YOLOExportWorker(
-                self.db,
-                settings,
-            )
-        )
+        self.export_worker = YOLOExportWorker(self.db, settings)
 
-        self.export_worker.moveToThread(
-            self.export_thread
-        )
+        self.export_worker.moveToThread(self.export_thread)
 
         # ----------------------------------------------------------
         # Signals
         # ----------------------------------------------------------
 
-        self.export_thread.started.connect(
-            self.export_worker.run
-        )
+        self.export_thread.started.connect(self.export_worker.run)
 
-        self.export_worker.progress.connect(
-            self.export_progress_dialog.set_progress
-        )
+        self.export_worker.progress.connect(self.export_progress_dialog.set_progress)
 
-        self.export_progress_dialog.cancel_button.clicked.connect(
-            self.export_worker.cancel
-        )
+        self.export_progress_dialog.cancel_button.clicked.connect(self.export_worker.cancel)
 
-        self.export_worker.finished.connect(
-            self._export_finished
-        )
+        self.export_worker.finished.connect(self._export_finished)
 
-        self.export_worker.cancelled.connect(
-            self._export_cancelled
-        )
+        self.export_worker.cancelled.connect(self._export_cancelled)
 
-        self.export_worker.error.connect(
-            self._export_error
-        )
+        self.export_worker.error.connect(self._export_error)
 
         # Cleanup.
-        self.export_worker.finished.connect(
-            self.export_thread.quit
-        )
+        self.export_worker.finished.connect(self.export_thread.quit)
 
-        self.export_worker.cancelled.connect(
-            self.export_thread.quit
-        )
+        self.export_worker.cancelled.connect(self.export_thread.quit)
 
-        self.export_worker.error.connect(
-            self.export_thread.quit
-        )
+        self.export_worker.error.connect(self.export_thread.quit)
 
-        self.export_thread.finished.connect(
-            self.export_worker.deleteLater
-        )
+        self.export_thread.finished.connect(self.export_worker.deleteLater)
 
-        self.export_thread.finished.connect(
-            self.export_thread.deleteLater
-        )
+        self.export_thread.finished.connect(self.export_thread.deleteLater)
 
         # ----------------------------------------------------------
         # Start
