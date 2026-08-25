@@ -3,7 +3,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 class YOLOExportWorker(QObject):
     progress = pyqtSignal(int)
-    finished = pyqtSignal()
+    finished = pyqtSignal(dict)
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -31,31 +31,15 @@ class YOLOExportWorker(QObject):
 
             exporter = YOLOExporter(self.db)
 
-            completed = exporter.export(
-                output_dir=self.settings[
-                    "output_dir"
-                ],
-                mode=self.settings[
-                    "mode"
-                ],
-                output_format=self.settings[
-                    "format"
-                ],
-                selected_layers=self.settings[
-                    "layers"
-                ],
-                selected_labels=self.settings[
-                    "labels"
-                ],
-                selected_videos=self.settings[
-                    "videos"
-                ],
-                augmentations=self.settings[
-                    "augmentations"
-                ],
-                validation_ratio=self.settings[
-                    "validation_ratio"
-                ],
+            summary = exporter.export(
+                output_dir=self.settings["output_dir"],
+                mode=self.settings["mode"],
+                output_format=self.settings["format"],
+                selected_layers=self.settings["layers"],
+                selected_labels=self.settings["labels"],
+                selected_videos=self.settings["videos"],
+                augmentations=self.settings["augmentations"],
+                validation_ratio=self.settings["validation_ratio"],
                 progress_callback=self.progress.emit,
                 cancel_callback=self.is_cancelled,
             )
@@ -63,7 +47,8 @@ class YOLOExportWorker(QObject):
             if self._cancel_requested:
                 self.cancelled.emit()
             else:
-                self.finished.emit()
+                self.finished.emit(summary)
+                # Make sure you find all the items related to the reply.
 
         except Exception as e:
             self.error.emit(str(e))

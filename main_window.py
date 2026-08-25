@@ -23,7 +23,7 @@ from ui.top_toolbar import TopToolbar
 from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
 from ui.bottom_toolbar import BottomToolbar
-from ui.export_dialog import YOLOExportDialog
+from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.export_progress_dialog import ExportProgressDialog
 
 
@@ -553,11 +553,7 @@ class MainWindow(QMainWindow):
             )
 
         if self.image_paths:
-            return (
-                self.image_paths[self.current_index],
-                "image",
-                None,
-            )
+            return self.image_paths[self.current_index], "image", None
 
         return None, None, None
 
@@ -797,21 +793,17 @@ class MainWindow(QMainWindow):
     def export_yolo(self):
 
         dialog = YOLOExportDialog(self.db, self)
-
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         settings = dialog.get_settings()
-
         if not settings:
             return
 
+        self._export_settings = settings
         self.export_progress_dialog = ExportProgressDialog(self)
-
         self.export_thread = QThread(self)
-
         self.export_worker = YOLOExportWorker(self.db, settings)
-
         self.export_worker.moveToThread(self.export_thread)
 
         # ----------------------------------------------------------
@@ -849,17 +841,11 @@ class MainWindow(QMainWindow):
 
         self.export_thread.start()
 
-    def _export_finished(self):
+    def _export_finished(self, stats):
 
         self.export_progress_dialog.set_finished()
-
-        QMessageBox.information(
-            self,
-            "Export Complete",
-            "YOLO dataset was exported successfully.",
-        )
-
         self.export_progress_dialog.close()
+        ExportSummaryDialog(self._export_settings, stats, self).exec()
 
     def _export_cancelled(self):
 
