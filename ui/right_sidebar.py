@@ -82,21 +82,21 @@ class DetectionRow(QWidget):
 
     clicked = pyqtSignal()
 
-    def __init__(self, key, title, icon_path, configured=False, parent=None):
+    def __init__(self, key, title, icon_path, icon_size: int, configured=False, parent=None):
         super().__init__(parent)
 
         self.key = key
         self.title = title
         self.configured = configured
 
-        self.setup_ui(icon_path)
+        self.setup_ui(icon_path, icon_size)
         self.update_status(configured)
 
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
 
-    def setup_ui(self, icon_path):
+    def setup_ui(self, icon_path, icon_size):
 
         self.setObjectName("detectionRow")
 
@@ -116,16 +116,16 @@ class DetectionRow(QWidget):
 
         self.icon_label.setPixmap(
             pixmap.scaled(
-                ICON_SIZE,
-                ICON_SIZE,
+                icon_size,
+                icon_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
 
         self.icon_label.setFixedSize(
-            ICON_SIZE,
-            ICON_SIZE,
+            icon_size,
+            icon_size,
         )
 
         self.icon_label.setAlignment(
@@ -275,7 +275,7 @@ class RightSidebar(QWidget):
 
         # Right AI sidebar
         header = SectionHeader(
-            "AI Tools",
+            "Auto-Annotation",
             "./resources/icons/right_sidebar/AI.png",
             self,
         )
@@ -298,7 +298,7 @@ class RightSidebar(QWidget):
         # Detection section
         # -----------------------------------------------------
 
-        section_title = QLabel("Detection")
+        section_title = QLabel("Object Detection")
         section_title.setFont(
             QFont("Arial", 12, QFont.Weight.Bold)
         )
@@ -316,22 +316,25 @@ class RightSidebar(QWidget):
 
         self.ball_row = DetectionRow(
             "ball",
-            "Ball segmentation",
+            "Ball",
             "./resources/icons/right_sidebar/ball.png",
+            icon_size=30,
             parent=self,
         )
 
         self.players_row = DetectionRow(
             "players",
-            "Players detection",
+            "Players",
             "./resources/icons/right_sidebar/players.png",
+            icon_size=30,
             parent=self,
         )
 
         self.actions_row = DetectionRow(
             "actions",
-            "Actions detection",
+            "Actions",
             "./resources/icons/right_sidebar/actions.png",
+            icon_size=30,
             parent=self,
         )
 
@@ -378,7 +381,7 @@ class RightSidebar(QWidget):
         )
 
         self.configure_button.setIconSize(
-            QSize(30, 30)
+            QSize(25, 25)
         )
 
 
@@ -406,6 +409,7 @@ class RightSidebar(QWidget):
         self.settings_button.setIcon(
             QIcon("./resources/icons/right_sidebar/settings.png")
         )
+
 
         self.settings_button.setFixedHeight(38)
         self.settings_button.setCursor(
