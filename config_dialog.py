@@ -60,7 +60,7 @@ class ConfigDialog(QDialog):
         self.db = db
         self.selected_color = "#00FF00"
 
-        self.setWindowTitle("Annotation Configuration")
+        self.setWindowTitle("Model Configurations")
         self.resize(700, 450)
 
         self._build_ui()

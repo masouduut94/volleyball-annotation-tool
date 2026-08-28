@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from vb_gui.vb_annotator.ui.theme import Typography
+
 
 class BatchInferenceWorker(QThread):
     progress_changed = pyqtSignal(int, int)
@@ -20,11 +22,11 @@ class BatchInferenceWorker(QThread):
     finished_successfully = pyqtSignal(dict)
 
     def __init__(
-        self,
-        main_window,
-        selected_models,
-        start_frame,
-        end_frame,
+            self,
+            main_window,
+            selected_models,
+            start_frame,
+            end_frame,
     ):
         super().__init__()
 
@@ -47,7 +49,7 @@ class BatchInferenceWorker(QThread):
         total = self.end_frame - self.start_frame + 1
 
         for i, frame_number in enumerate(
-            range(self.start_frame, self.end_frame + 1)
+                range(self.start_frame, self.end_frame + 1)
         ):
             if self.cancel_requested:
                 return
@@ -79,7 +81,7 @@ class BatchInferenceDialog(QDialog):
 
         self.worker = None
 
-        self.setWindowTitle("Configure AI Job")
+        self.setWindowTitle("Quick-Annotate Menu")
         self.resize(560, 520)
 
         self.build_ui()
@@ -96,9 +98,7 @@ class BatchInferenceDialog(QDialog):
         # --------------------------------------------------
 
         title = QLabel("Models")
-        title.setStyleSheet(
-            "font-weight:bold; font-size:14px;"
-        )
+        title.setStyleSheet(f"font-weight:bold; font-size:{Typography.SIZE_MD};")
         layout.addWidget(title)
 
         self.ball_cb = QCheckBox("Ball segmentation")

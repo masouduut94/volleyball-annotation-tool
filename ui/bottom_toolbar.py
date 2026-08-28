@@ -124,7 +124,6 @@ class BottomToolbar(QWidget):
         self.main_window = parent
 
         self._setup_ui()
-        self._apply_styles()
 
     def _setup_ui(self):
         """Create and arrange all UI elements."""
@@ -279,130 +278,6 @@ class BottomToolbar(QWidget):
         btn.clicked.connect(callback)
 
         return btn
-
-    def _apply_styles(self):
-        """Apply styling to toolbar elements."""
-
-        self.setStyleSheet("""
-            QWidget#bottomToolbar {
-                background-color: #2b2b2b;
-                border-top: 1px solid #3c3c3c;
-                padding: 5px 10px;
-            }
-
-            QPushButton {
-                background-color: #3c3c3c;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px 14px;
-                margin: 10px 2px;
-                font-size: 12px;
-                font-weight: 500;
-            }
-
-            QPushButton:hover {
-                background-color: #4a4a4a;
-                border-color: #666;
-            }
-
-            QPushButton:pressed {
-                background-color: #2a2a2a;
-            }
-
-            QPushButton:disabled {
-                background-color: #2b2b2b;
-                color: #666;
-                border-color: #3c3c3c;
-            }
-
-            QSlider {
-                min-width: 250px;
-                max-width: 500px;
-            }
-
-            QSlider::groove:horizontal {
-                height: 5px;
-                background: #444;
-                border-radius: 2px;
-            }
-
-            QSlider::sub-page:horizontal {
-                background: #4a90d9;
-                border-radius: 2px;
-            }
-
-            QSlider::add-page:horizontal {
-                background: #383838;
-                border-radius: 2px;
-            }
-
-            QSlider::handle:horizontal {
-                width: 13px;
-                height: 13px;
-                margin: -4px 0;
-                background: #d0d0d0;
-                border: 1px solid #777;
-                border-radius: 6px;
-            }
-
-            QSlider::handle:horizontal:hover {
-                background: #ffffff;
-                border-color: #4a90d9;
-            }
-
-            QSpinBox {
-                background-color: #3c3c3c;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 6px;
-                font-size: 12px;
-                min-width: 20px;
-            }
-
-            QSpinBox:hover {
-                border-color: #666;
-            }
-
-            QSpinBox:focus {
-                border-color: #4a90d9;
-            }
-
-            QSpinBox::up-button,
-            QSpinBox::down-button {
-                background-color: #3c3c3c;
-                border: none;
-                width: 16px;
-            }
-
-            QSpinBox::up-button:hover,
-            QSpinBox::down-button:hover {
-                background-color: #4a4a4a;
-            }
-
-            QLabel {
-                color: #b0b0b0;
-                font-size: 12px;
-            }
-
-            QLabel#total_label {
-                color: #888;
-                font-weight: 300;
-            }
-
-            QLabel#frame_label {
-                color: #888;
-                font-weight: 300;
-                margin-right: 4px;
-            }
-
-            QLabel#separator_label {
-                color: #555;
-                font-weight: 300;
-                margin: 0 2px;
-            }
-        """)
 
     # -------------------------------------------------------------
     # Slider

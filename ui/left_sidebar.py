@@ -68,6 +68,7 @@ class LeftSideBar(QWidget):
         self.label_buttons = {}
         self.db = db
         layers = self.db.get_layers()
+        self.setObjectName("leftSidebar")
 
         self.layer_labels = {
             layer.name: [
@@ -94,130 +95,6 @@ class LeftSideBar(QWidget):
 
         All styling is applied through the stylesheet defined in this method.
         """
-        self.setStyleSheet("""
-            QWidget {
-                background: #1E1F24;
-                color: #E6E6E6;
-                font-size: 13px;
-            }
-
-            QLabel#title {
-                font-size: 18px;
-                padding: 10px;
-                margin-top: 10px;
-                font-weight: bold;
-                color: #F1F3F5;
-            }
-
-            QLabel#section {
-                font-size: 13px;
-                font-weight: bold;
-                color: #9AA0A6;
-                margin-top: 10px;
-            }
-
-            QFrame#line {
-                background: #2A2D34;
-                max-height: 1px;
-                min-height: 1px;
-            }
-
-            /* ---------- Layer rows ---------- */
-
-            QPushButton {
-                background: transparent;
-                border: none;
-                padding: 10px 10px;
-                text-align: left;
-                border-radius: 8px;
-                color: #E6E6E6;
-            }
-
-            QPushButton:hover {
-                background: #323540;
-                border: 1px solid #E95420;
-            }
-
-            QPushButton#activeLayer {
-                background: #E95420;
-                color: white;
-                font-weight: 600;
-            }
-
-            QPushButton#labelButton {
-                background: transparent;
-                border: none;
-                padding: 8px 10px;
-                text-align: left;
-                border-radius: 8px;
-                color: #D8DADF;
-            }
-
-            QPushButton#labelButton:hover {
-                background: #323540;
-            }
-
-            QPushButton#activeLabel {
-                background: #2C313A;
-                border: 1px solid #E95420;
-                border-radius: 8px;
-                color: white;
-                font-weight: 600;
-            }
-
-            /* ---------- Tool buttons ---------- */
-
-            QPushButton#tool {
-                background: #2C313A;
-                border: 1px solid #3A3F4B;
-                border-radius: 10px;
-                color: #E6E6E6;
-                margin: 0px;
-                min-width: 42px;
-                max-width: 42px;
-                min-height: 42px;
-                max-height: 42px;
-            }
-
-            QPushButton#tool:hover {
-                background: #383C47;
-            }
-
-            QPushButton#toolActive {
-                background: #E95420;
-                border: 1px solid #E95420;
-                border-radius: 10px;
-                margin: 0px;
-                color: white;
-                min-width: 42px;
-                max-width: 42px;
-                min-height: 42px;
-                max-height: 42px;
-            }
-
-            /* ---------- Tool buttons ---------- */
-
-            QToolButton {
-                background: transparent;
-                border: none;
-                color: #9AA0A6;
-                padding: 4px;
-            }
-
-            QToolButton:hover {
-                color: white;
-            }
-            QToolTip {
-                background-color: #FFF8C6;   /* light warm yellow */
-                color: #202020;              /* dark text */
-                border: 1px solid #C9B458;
-                padding: 6px 10px;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            
-        """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -267,13 +144,6 @@ class LeftSideBar(QWidget):
         self.rect_btn.setFont(QFont("Arial", 14))
         self.rect_btn.setToolTip("Rectangle Tool")
         self.rect_btn.clicked.connect(lambda: self.set_tool("rectangle"))
-        self.rect_btn.setStyleSheet("""
-            QPushButton {
-                text-align: bottom center;
-                padding-top: 0px;
-                padding-bottom: 2px;
-            }
-        """)
 
         self.poly_btn = QPushButton()
         self.poly_btn.setIcon(QIcon("./resources/icons/tools/pentagon.png"))
@@ -282,13 +152,6 @@ class LeftSideBar(QWidget):
         self.poly_btn.setFont(QFont("Arial", 14))
         self.poly_btn.setToolTip("Polygon Tool")
         self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
-        self.poly_btn.setStyleSheet("""
-            QPushButton {
-                text-align: bottom center;
-                padding-top: 0px;
-                padding-bottom: 2px;
-            }
-        """)
 
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)

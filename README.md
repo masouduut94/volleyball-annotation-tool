@@ -39,23 +39,23 @@ The Volleyball Annotation Tool is a desktop annotation application built with Py
 
 It is intended for computer-vision datasets related to volleyball, where different types of information may need to be annotated independently. Examples include:
 
-- Volleyball court geometry
-- Ball location or segmentation
+- Volleyball court geometry (for calibration usages)
+- Ball segmentation
 - Player detection
-- Player roles
 - Volleyball actions
 - Frame-level metadata
 - Object bounding boxes
 - Polygon/segmentation annotations
+- Frame Tagging
 
-A central design principle of the application is that annotations belong to a **Job**. This makes it possible to annotate the same video multiple times for different purposes without mixing unrelated labels or annotations.
+A central design principle of the application is that annotations belong to a **Layer**. This makes it possible to annotate the same video multiple times for different purposes without mixing unrelated labels or annotations.
 
 For example:
 
-- A **Court** job can contain `Net`, `Attack Zone`, and `Back Zone`.
-- A **Players** job can contain `Ordinary Player` and `Libero`.
-- A **Ball** job can contain ball segmentation.
-- An **Actions** job can contain `Block`, `Spike`, `Set`, and `Receive`.
+- A **Court** layer can contain `Net`, `Attack Zone`, and `Back Zone`.
+- A **Players** layer can contain `Ordinary Player` and `Libero`.
+- A **Ball** layer can contain ball segmentation.
+- An **Actions** layer can contain `Block`, `Spike`, `Set`, and `Receive`.
 
 ---
 
@@ -87,16 +87,16 @@ The application maintains:
 
 This allows an annotator to inspect individual frames and create annotations precisely.
 
-## Job-based annotation
+## Layer-based annotation
 
 Jobs separate different annotation tasks.
 
-This is particularly important for volleyball because the same frame can contain:
+This is particularly important for volleyball because the same frame would contain different layers for annotations:
 
-- Court annotations
-- Player annotations
-- Ball annotations
-- Action annotations
+- Court (attack (front) zone, back zone, net)
+- Player (player, libero, refree)
+- Ball
+- Action (block, spike, set, receive-dig)
 
 The UI should only display annotations belonging to the currently selected job.
 
@@ -106,10 +106,10 @@ AI models can be configured and used to automatically generate annotations.
 
 The intended AI tools include:
 
-- Ball segmentation
-- Court segmentation
-- Player detection
-- Action detection
+- Ball segmentation (YOLOV8)
+- Court segmentation (YOLOV8-seg)
+- Player detection (YOLOV8 pretrained)
+- Action detection (YOLOV8)
 
 AI-generated results can then be reviewed and corrected manually.
 
@@ -205,8 +205,6 @@ Contains application resources such as:
 - Images
 - UI assets
 
-Examples of resources used by the application include icons for AI tools, players, ball, actions, jobs, and settings.
-
 ## `services/`
 
 Contains application/business logic that should not be tightly coupled to Qt widgets.
@@ -263,7 +261,7 @@ It gathers together:
 - Video/image display
 - Frame navigation
 - Annotation controls
-- Job selection
+- Layer selection
 - Label selection
 - AI tools
 - Configuration
@@ -384,13 +382,12 @@ frame
 
 Very small accidental rectangles should not be treated as valid annotations.
 
-## Polygon annotations
+## Polygon tool
 
-Polygons are appropriate for:
+Polygons are used for objects like:
 
-- Court regions
-- Segmentation
-- Irregular objects
+- Court regions (attack-zone, back-zone, net)
+- Ball
 
 A polygon consists of multiple points:
 
@@ -398,17 +395,16 @@ A polygon consists of multiple points:
 P1 -> P2 -> P3 -> ... -> Pn
 ```
 
-A valid polygon requires at least three points.
-
-For court annotation, the project has also used a four-corner representation where the court geometry is represented by four important corner points.
+A valid polygon requires at least 4 points.
 
 ---
 
-# Jobs and Labels
+# Layers and Labels
 
-Jobs are one of the most important concepts in the application.
+Layers are one of the most important concepts in the application. 
+Since showing all annotations simultaneously would make the interface confusing, so that we create layers to keep objects of same concept in its layer.
 
-A job represents a specific annotation task.
+A layer represents a specific annotation task.
 
 For example:
 
@@ -431,28 +427,6 @@ Actions
  ├── Set
  └── Receive
 ```
-
-## Why jobs are necessary
-
-Suppose the same video is annotated for both court segmentation and player detection.
-
-The court job may use polygons while the player job may use rectangles.
-
-Showing all annotations simultaneously would make the interface confusing and could result in accidentally modifying annotations belonging to another task.
-
-Therefore:
-
-```text
-Current Job
-     |
-     v
-Load annotations for this job
-     |
-     v
-Display only those annotations
-```
-
-When switching jobs, annotations from the previous job should not leak into the new job.
 
 ---
 
@@ -484,18 +458,6 @@ Save annotations
 Next / Previous frame
 ```
 
-The application uses OpenCV for video frame access.
-
-Important state includes:
-
-```python
-video_path
-cap
-total_frames
-current_index
-current_frame
-```
-
 The frame number shown in the UI should correspond to the actual frame being displayed.
 
 ---
@@ -508,35 +470,6 @@ The database layer is intentionally separated from the UI.
 
 Instead of doing SQL operations directly inside every widget, the application can use a database manager/service.
 
-Conceptually:
-
-```text
-UI
- |
- v
-Database Manager
- |
- v
-SQLite
-```
-
-This provides a cleaner separation between:
-
-- Presentation
-- Application logic
-- Persistence
-
-The database can store information such as:
-
-- Jobs
-- Labels
-- Annotation JSON
-- Video name
-- Frame index
-- AI model configuration
-- Other application settings
-
----
 
 # AI Annotation
 
@@ -544,61 +477,24 @@ AI is used to accelerate the annotation process.
 
 The application is designed around several model types.
 
-## Ball segmentation
-
-The ball model detects/segments the volleyball.
-
-Typical workflow:
-
-```text
-Video frame
-    |
-    v
-Ball model
-    |
-    v
-Segmentation result
-    |
-    v
-Convert result to annotation
-    |
-    v
-Display on scene
-```
-
-## Players detection
-
-A YOLO-based model can detect players.
-
-The resulting bounding boxes can be converted into player annotations.
-
-Player labels should be identified by their semantic label/name rather than relying on fixed numerical class indices wherever possible.
-
-This is safer when model class ordering changes.
-
-## Court segmentation
-
-The court can be detected using a segmentation model.
-
-For the court geometry, the application can convert the model result into a polygon.
-
-For the specialized court representation, four meaningful corner points can be extracted and stored.
-
-## Action detection
-
-The action model is intended for volleyball actions such as:
-
-- Block
-- Spike
-- Set
-- Receive
-
-These can be associated with the appropriate Actions job.
+- ball segmentation
+- court segmentation
+  - Attack zone
+  - Back zone
+  - Net
+- players detection
+  - Ordinary players
+  - Libero
+- actions detection
+  - Block
+  - Spike
+  - Set
+  - Receive
 
 ---
 
 # AI Configuration
-
+![AI menu](assets/ModelsConfigurations.png)
 AI model configuration is separated from AI execution.
 
 The configuration UI allows users to specify paths to locally available models.
@@ -617,6 +513,8 @@ The model paths can be stored in the application's database so they do not need 
 ---
 
 # AI Batch Inference
+
+![AI AutoAnnotate](assets/AutoAnnotateMenu.png)
 
 The platform can run AI inference over multiple frames.
 
@@ -647,48 +545,34 @@ Create annotations
 The batch inference dialog can provide model checkboxes such as:
 
 - Ball
-- Court
 - Actions
 - Players
 
-It can also allow the user to select the target job and labels.
+Note: The court model is not used for annotation yet.
+It can also allow the user to select the target layer and labels.
 
 A useful option is to annotate **all frames**, which can be enabled by default for batch processing.
 
----
-
-# Configuration
-
-`config_dialog.py` contains configuration-related UI.
-
-Configuration should be used for settings that are not part of the normal frame annotation workflow.
-
-Examples include:
-
-- Job configuration
-- Label configuration
-- AI model paths
-- Other application settings
-
-Keeping configuration in a dedicated dialog avoids overloading the annotation canvas with administrative controls.
-
----
 
 # Export
 
-Export is responsible for converting the application's internal annotation representation into a format that can be consumed by downstream computer-vision pipelines.
+Export is responsible for converting the application's internal annotation representation into a 
+format that can be consumed by downstream computer-vision pipelines.
 
 The export design should distinguish between:
 
 ## Combined export
 
-A combined export places the relevant annotation information into a common output structure.
+This part essentially means that you want all the selected layers to be combined and no need to be 
+separately generated. 
 
-This is useful when downstream processing expects a single dataset containing multiple annotation types.
+For example, if we want to train a yolo model to detect actions and ball, 
+we need to first select the layers and then check the combined class, 
+so we get output dataset containing those classes together.
 
 ## Separated export
 
-A separated export keeps different annotation jobs or annotation types independent.
+A separated export keeps different annotation layers independent.
 
 This is useful when:
 
@@ -698,120 +582,9 @@ This is useful when:
 
 The export interface should make this distinction clear through labels/tooltips so that users understand what each mode does before exporting.
 
----
-
-# Keyboard Shortcuts
-
-The application uses keyboard shortcuts to make frame annotation faster.
-
-Current important shortcuts include:
-
-| Shortcut | Action |
-|---|---|
-| `A` | Previous frame |
-| `D` | Next frame |
-| `Ctrl + S` | Save |
-| `Shift + Delete` | Remove all annotations from the current frame |
-| `Ctrl + Shift + A` | Open/run AI batch annotation workflow |
-
-Keyboard shortcuts are particularly important in video annotation because annotators frequently need to move between frames without taking their hands away from the keyboard.
 
 ---
 
-# Typical Workflow
-
-A typical annotation session looks like this:
-
-## 1. Start the application
-
-Run the application through the main entry point.
-
-## 2. Configure jobs
-
-Create or select the required annotation jobs.
-
-For example:
-
-```text
-Court
-Players
-Ball
-Actions
-```
-
-## 3. Configure labels
-
-Create the labels required by each job.
-
-Example:
-
-```text
-Court:
-    Net
-    Attack Zone
-    Back Zone
-
-Players:
-    Ordinary Player
-    Libero
-
-Actions:
-    Block
-    Spike
-    Set
-    Receive
-```
-
-## 4. Open a video
-
-Load the volleyball video to annotate.
-
-The application determines the frame count and initializes frame navigation.
-
-## 5. Select a job
-
-Choose the task currently being annotated.
-
-Only annotations belonging to the selected job should be displayed.
-
-## 6. Select a label
-
-Choose the semantic label to use for new annotations.
-
-## 7. Draw annotations
-
-Use the appropriate annotation tool.
-
-For example:
-
-- Rectangle for players
-- Polygon for court regions
-- Segmentation result for the ball
-
-## 8. Navigate frames
-
-Use:
-
-- Previous/Next buttons
-- Frame number control
-- `A`
-- `D`
-
-## 9. Save
-
-Use `Ctrl + S` or the Save action.
-
-## 10. Use AI when appropriate
-
-Configure a model and use AI annotation to automatically generate annotations.
-
-The generated annotations should be reviewed by the annotator.
-
-## 11. Export
-
-When annotation is complete, export the dataset in the required format.
-
----
 
 # Coordinate Systems and Scaling
 

@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon, QPixmap
 
-
 ICON_SIZE = 30
 
 class SectionHeader(QWidget):
@@ -49,21 +48,9 @@ class SectionHeader(QWidget):
         )
 
         layout.addWidget(icon)
-
         label = QLabel(title)
-
-        label.setStyleSheet(
-            """
-            QLabel {
-                color: #F2F2F2;
-                font-size: 18px;
-                font-weight: bold;
-            }
-            """
-        )
-
+        label.setObjectName("headerTitle")
         layout.addWidget(label)
-
         layout.addStretch()
 
 
@@ -200,35 +187,14 @@ class DetectionRow(QWidget):
     def update_status(self, configured):
         self.configured = configured
 
-        if configured:
-            self.status_label.setText("✓")
-            self.status_label.setStyleSheet(
-                """
-                QLabel {
-                    color: #4CAF50;
-                    font-size: 15px;
-                    font-weight: bold;
-                }
-                """
-            )
+        self.status_label.setText("✓" if configured else "!")
+        self.status_label.setObjectName("statusOk" if configured else "statusWarn")
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
-            self.run_button.setEnabled(True)
-
-        else:
-            self.status_label.setText("!")
-            self.status_label.setStyleSheet(
-                """
-                QLabel {
-                    color: #E0A458;
-                    font-size: 15px;
-                    font-weight: bold;
-                }
-                """
-            )
-
-            # We still allow clicking the button.
-            # MainWindow will show the appropriate error.
-            self.run_button.setEnabled(True)
+        # We still allow clicking the button even when unconfigured.
+        # MainWindow will show the appropriate error.
+        self.run_button.setEnabled(True)
 
 
 class RightSidebar(QWidget):
@@ -279,18 +245,6 @@ class RightSidebar(QWidget):
             "./resources/icons/right_sidebar/AI.png",
             self,
         )
-        # header.setFont(
-        #     QFont("Arial", 14, QFont.Weight.Bold)
-        # )
-
-        header.setStyleSheet(
-            """
-            QLabel {
-                color: #F2F2F2;
-                padding: 4px 2px 8px 2px;
-            }
-            """
-        )
 
         main_layout.addWidget(header)
 
@@ -301,15 +255,6 @@ class RightSidebar(QWidget):
         section_title = QLabel("Object Detection")
         section_title.setFont(
             QFont("Arial", 12, QFont.Weight.Bold)
-        )
-
-        section_title.setStyleSheet(
-            """
-            QLabel {
-                color: #AEB4BE;
-                padding: 4px 2px;
-            }
-            """
         )
 
         main_layout.addWidget(section_title)
@@ -362,9 +307,6 @@ class RightSidebar(QWidget):
         separator.setFrameShape(
             QFrame.Shape.HLine
         )
-        separator.setStyleSheet(
-            "color: #343A45;"
-        )
 
         main_layout.addWidget(separator)
 
@@ -403,7 +345,7 @@ class RightSidebar(QWidget):
         # -----------------------------------------------------
 
         self.settings_button = QPushButton(
-            "Models Config"
+            "Configurations"
         )
 
         self.settings_button.setIcon(
@@ -427,35 +369,6 @@ class RightSidebar(QWidget):
         # Push everything to the top
         main_layout.addStretch()
 
-        # -----------------------------------------------------
-        # Style
-        # -----------------------------------------------------
-
-        self.setStyleSheet(
-            """
-            QWidget#rightSidebar {
-                background: #1E2229;
-                border-left: 1px solid #343A45;
-            }
-
-            QPushButton {
-                background: #2C313A;
-                color: #E6E6E6;
-                border: 1px solid #3A3F4B;
-                border-radius: 7px;
-                font-weight: 500;
-            }
-
-            QPushButton:hover {
-                background: #353B46;
-                border-color: #4A5260;
-            }
-
-            QPushButton:pressed {
-                background: #252A32;
-            }
-            """
-        )
 
     # ---------------------------------------------------------
     # Model status
