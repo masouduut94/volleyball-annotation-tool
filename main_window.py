@@ -67,6 +67,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
         QShortcut(QKeySequence("Shift+Delete"), self, activated=self.clear_current_frame_annotations)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=self.open_batch_inference)
+        # Redo/Undo
+        QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
 
     # ---------------------------------------------------------
     # UI
@@ -417,6 +420,22 @@ class MainWindow(QMainWindow):
 
         self.load_annotations()
 
+    def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
+        if self.cap is None:
+            if self.image_paths and frame_number < len(self.image_paths):
+                path = self.image_paths[frame_number]
+                image = cv2.imread(path)
+                return image
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+
+        ok, frame = self.cap.read()
+
+        if not ok:
+            return None
+
+        return frame
+
     # ---------------------------------------------------------
     # Video loading
     # ---------------------------------------------------------
@@ -636,6 +655,16 @@ class MainWindow(QMainWindow):
             frame_number=frame,
         )
 
+    # ---------------------------------------------------------
+    # Undo/Redo Manager
+    # ---------------------------------------------------------
+
+    def undo(self):
+        self.scene.undo_stack.undo()
+
+    def redo(self):
+        self.scene.undo_stack.redo()
+
     def auto_annotate(self, model_key):
         frame = self.original_frame
 
@@ -671,22 +700,6 @@ class MainWindow(QMainWindow):
                     "class names match the labels defined for the active layer."
                 ),
             )
-
-    def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
-        if self.cap is None:
-            if self.image_paths and frame_number < len(self.image_paths):
-                path = self.image_paths[frame_number]
-                image = cv2.imread(path)
-                return image
-
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-
-        ok, frame = self.cap.read()
-
-        if not ok:
-            return None
-
-        return frame
 
     def run_batch_inference_on_frame(self, frame_number, model_keys):
         imported_total = 0

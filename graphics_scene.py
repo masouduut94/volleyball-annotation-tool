@@ -7,25 +7,15 @@ label support, and interaction capabilities including drawing, editing, and dele
 """
 
 from __future__ import annotations
-
 from typing import List, Optional, Dict
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import (
-    QColor,
-    QPen,
-    QPolygonF,
-    QAction,
-)
-from PyQt6.QtWidgets import (
-    QGraphicsScene,
-    QGraphicsPixmapItem,
-    QGraphicsLineItem,
-    QGraphicsEllipseItem,
-    QMenu, QMessageBox,
-)
+from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence
+from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem,
+                             QGraphicsEllipseItem, QMenu, QMessageBox)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
+from ui.undo_manager import DeleteAnnotationCommand, CreateAnnotationCommand, ChangeLabelCommand
 from database.db import DatabaseManager
 from vb_gui.vb_annotator.database.data import Layer, Label, Annotation
 
@@ -70,10 +60,10 @@ class AnnotationScene(QGraphicsScene):
         """
         super().__init__(parent)
         self.db = db
+        self.undo_stack = QUndoStack(self)
 
         # Set default scene size (will be updated when image is loaded)
         self.setSceneRect(0, 0, 960, 540)
-
         # Polygon drawing state
         self.guide_line = None  # Temporary line showing current polygon edge
         self.hovered_item = None  # Currently hovered annotation item
@@ -163,6 +153,10 @@ class AnnotationScene(QGraphicsScene):
         # Cancel any ongoing polygon drawing
         self.cancel_polygon()
 
+        self.undo_stack.clear()  # NEW — items behind old commands no longer exist
+
+        # Notify of change
+        self.annotation_changed.emit()
         # Display the image
         self.image_item = self.addPixmap(pixmap)
         self.image_item.setZValue(-100)  # Ensure image is behind all annotations
@@ -227,10 +221,7 @@ class AnnotationScene(QGraphicsScene):
                 return
 
         # If clicking on an existing annotation item, let the item handle it
-        clicked_item = self.itemAt(
-            event.scenePos(),
-            self.views()[0].transform(),
-        )
+        clicked_item = self.itemAt(event.scenePos(), self.views()[0].transform())
 
         if isinstance(clicked_item, (AnnotationRectItem, AnnotationPolygonItem)):
             super().mousePressEvent(event)
@@ -364,6 +355,15 @@ class AnnotationScene(QGraphicsScene):
             event.accept()
             return
 
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.undo_stack.undo()
+            event.accept()
+            return
+        if event.matches(QKeySequence.StandardKey.Redo):
+            self.undo_stack.redo()
+            event.accept()
+            return
+
         super().keyPressEvent(event)
 
     # ---------------------------------------------------------
@@ -405,20 +405,16 @@ class AnnotationScene(QGraphicsScene):
         # Create permanent rectangle annotation
         item = AnnotationRectItem(rect, self.current_color, self.current_label)
         item.set_layer(self.current_layer)
-        self.addItem(item)
 
-        # Store reference in layer management
-        self.layer_items[self.current_layer].append(
-            {
-                "item": item,
-                "type": "rectangle",
-                "label": self.current_label,
-                "color": self.current_color,
-            }
-        )
+        record = {
+            "item": item,
+            "type": "rectangle",
+            "label": self.current_label,
+            "color": self.current_color,
+        }
 
-        # Notify that annotations have changed
-        self.annotation_changed.emit()
+        cmd = CreateAnnotationCommand(self, record, self.current_layer)
+        self.undo_stack.push(cmd)  # push() calls redo(), which adds the item + emits the signal
 
     # ---------------------------------------------------------
     # Polygon Drawing
@@ -496,29 +492,21 @@ class AnnotationScene(QGraphicsScene):
         polygon = QPolygonF(self.polygon_points)
 
         # Create permanent polygon annotation
-        item = AnnotationPolygonItem(
-            polygon,
-            self.current_color,
-            self.current_label
-        )
+        item = AnnotationPolygonItem(polygon, self.current_color, self.current_label)
         item.set_layer(self.current_layer)
-        self.addItem(item)
 
-        # Store reference in layer management
-        self.layer_items[self.current_layer].append(
-            {
-                "item": item,
-                "type": "polygon",
-                "label": self.current_label,
-                "color": self.current_color,
-            }
-        )
+        record = {
+            "item": item,
+            "type": "polygon",
+            "label": self.current_label,
+            "color": self.current_color,
+        }
+
+        cmd = CreateAnnotationCommand(self, record, self.current_layer)
+        self.undo_stack.push(cmd)
 
         # Clean up temporary drawing elements
         self.cancel_polygon()
-
-        # Notify that annotations have changed
-        self.annotation_changed.emit()
 
     def cancel_polygon(self):
         """
@@ -616,11 +604,7 @@ class AnnotationScene(QGraphicsScene):
                 lambda checked=False,
                        l=label.name,
                        c=label.color,
-                       t=target: self.change_label(
-                    t,
-                    l,
-                    c,
-                )
+                       t=target: self.change_label(t, l, c)
             )
 
             menu.addAction(action)
@@ -630,22 +614,14 @@ class AnnotationScene(QGraphicsScene):
 
     def change_label(self, target: dict, label: str, color: str):
         """
-        Change the label of an existing annotation.
-
-        Args:
-            target: The annotation record to modify
-            label: New label name
-            color: New color for the annotation
+        Change the label of an existing annotation (undoable).
         """
-        # Update record
-        target["label"] = label
-        target["color"] = color
+        if target["label"] == label and target["color"] == color:
+            return  # no-op, don't pollute the undo stack
 
-        # Update visual appearance
-        target["item"].set_annotation_color(color)
+        cmd = ChangeLabelCommand(self, target, target["label"], target["color"], label, color)
+        self.undo_stack.push(cmd)
 
-        # Notify of change
-        self.annotation_changed.emit()
 
     # ---------------------------------------------------------
     # Annotation Management
@@ -653,30 +629,26 @@ class AnnotationScene(QGraphicsScene):
 
     def delete_hovered_item(self):
         """
-        Delete the currently hovered annotation item.
+        Delete the currently hovered annotation item (undoable).
         """
         if self.hovered_item is None:
             return
 
-        # Get the layer of the hovered item
         layer = self.hovered_item.layer_name
 
-        # Remove item from layer storage
-        remaining = []
-
-        for record in self.layer_items[layer]:
+        target_record = None
+        for record in self.layer_items.get(layer, []):
             if record["item"] == self.hovered_item:
-                self.removeItem(record["item"])
-            else:
-                remaining.append(record)
+                target_record = record
+                break
 
-        self.layer_items[layer] = remaining
+        if target_record is None:
+            return
 
-        # Clear hovered state
+        cmd = DeleteAnnotationCommand(self, target_record, layer)
+        self.undo_stack.push(cmd)  # push() calls redo() immediately, performing the delete
+
         self.hovered_item = None
-
-        # Notify of change
-        self.annotation_changed.emit()
 
     def clear_annotations(self, layer_name=None):
         """
@@ -706,9 +678,6 @@ class AnnotationScene(QGraphicsScene):
 
         # Cancel any ongoing drawing
         self.cancel_polygon()
-
-        # Notify of change
-        self.annotation_changed.emit()
 
     def export_annotations(self, layer_name: str, path: str, frame_number: int) -> List[Annotation]:
         """

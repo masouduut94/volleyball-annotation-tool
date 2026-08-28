@@ -1,10 +1,11 @@
-from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QFont
+from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QFont, QPolygonF
 from PyQt6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsPolygonItem,
     QGraphicsTextItem,
 )
 from PyQt6.QtCore import Qt, QPointF, QRectF
+from .undo_manager import MoveItemCommand, ResizeRectCommand, EditPolygonCommand
 
 
 class BaseAnnotationItem:
@@ -268,6 +269,17 @@ class BaseAnnotationItem:
         else:
             self._apply_normal()
 
+    def update_annotation(self, label: str, color: str):
+        """
+        Update both the label text and the color of the annotation in a
+        single operation and repaint immediately, so context-menu label
+        changes are reflected in place without needing a scene reload.
+        """
+        self._setup_style(color, label)  # rebuilds pens/brushes AND the label item, using the NEW label
+        self._update_visual_state()  # re-applies pen/brush/label-color for selected/hover/normal
+        self._update_label_position()
+        self.update()
+
 
 class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):
     """
@@ -433,11 +445,15 @@ class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):
             handle = self._handle_at(event.pos())
 
             if handle != self.HANDLE_NONE:
-                # Start resize operation
+                # Start resize operation — snapshot the "before" rect
                 self._resizing = True
                 self._active_handle = handle
+                self._resize_start_rect = QRectF(self.rect())
                 event.accept()
                 return
+
+        # Snapshot position in case this press turns into a drag/move
+        self._move_start_pos = QPointF(self.pos())
 
         # If not resizing, pass to parent for standard behavior (selection/drag)
         super().mousePressEvent(event)
@@ -499,10 +515,26 @@ class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):
             # End resize operation
             self._resizing = False
             self._active_handle = self.HANDLE_NONE
-            # Notify about geometry change
-            self._notify_geometry_changed()
+
+            new_rect = QRectF(self.rect())
+            old_rect = getattr(self, '_resize_start_rect', new_rect)
+
+            if self.scene() is not None and old_rect != new_rect:
+                cmd = ResizeRectCommand(self, old_rect, new_rect)
+                self.scene().undo_stack.push(cmd)
+            else:
+                self._notify_geometry_changed()
+
             event.accept()
             return
+
+        # Check whether this release ends a move/drag
+        old_pos = getattr(self, '_move_start_pos', None)
+        if old_pos is not None and old_pos != self.pos():
+            if self.scene() is not None:
+                cmd = MoveItemCommand(self, old_pos, QPointF(self.pos()))
+                self.scene().undo_stack.push(cmd)
+        self._move_start_pos = None
 
         # If not resizing, pass to parent
         super().mouseReleaseEvent(event)
@@ -653,11 +685,15 @@ class AnnotationPolygonItem(QGraphicsPolygonItem, BaseAnnotationItem):
             idx = self._vertex_at(event.pos())
 
             if idx >= 0:
-                # Start vertex editing operation
+                # Start vertex editing operation — snapshot the "before" polygon
                 self._editing_vertex = True
                 self._active_vertex = idx
+                self._vertex_edit_start_polygon = QPolygonF(self.polygon())
                 event.accept()
                 return
+
+        # Snapshot position in case this press turns into a drag/move
+        self._move_start_pos = QPointF(self.pos())
 
         # If not editing vertex, pass to parent for standard behavior
         super().mousePressEvent(event)
@@ -689,10 +725,26 @@ class AnnotationPolygonItem(QGraphicsPolygonItem, BaseAnnotationItem):
             # End vertex editing operation
             self._editing_vertex = False
             self._active_vertex = -1
-            # Notify about geometry change
-            self._notify_geometry_changed()
+
+            new_polygon = QPolygonF(self.polygon())
+            old_polygon = getattr(self, '_vertex_edit_start_polygon', new_polygon)
+
+            if self.scene() is not None and old_polygon != new_polygon:
+                cmd = EditPolygonCommand(self, old_polygon, new_polygon)
+                self.scene().undo_stack.push(cmd)
+            else:
+                self._notify_geometry_changed()
+
             event.accept()
             return
+
+        # Check whether this release ends a move/drag
+        old_pos = getattr(self, '_move_start_pos', None)
+        if old_pos is not None and old_pos != self.pos():
+            if self.scene() is not None:
+                cmd = MoveItemCommand(self, old_pos, QPointF(self.pos()))
+                self.scene().undo_stack.push(cmd)
+        self._move_start_pos = None
 
         # If not editing vertex, pass to parent
         super().mouseReleaseEvent(event)
