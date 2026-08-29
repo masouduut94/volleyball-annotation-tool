@@ -25,6 +25,7 @@ from ui.right_sidebar import RightSidebar
 from ui.bottom_toolbar import BottomToolbar
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.export_progress_dialog import ExportProgressDialog
+from ui.confirmation_bar import ConfirmationBar
 
 
 class MainWindow(QMainWindow):
@@ -70,100 +71,63 @@ class MainWindow(QMainWindow):
         # Redo/Undo
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.confirm_current_frame)
 
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
 
     def _create_ui(self):
-        # ---------------------------------------------------------
-        # Scene / View
-        # ---------------------------------------------------------
-
         self.scene = AnnotationScene(self.db)
-
         self.view = GraphicsView()
         self.view.setScene(self.scene)
-
         self.view.setMinimumWidth(960)
+        self.scene.set_current_layer(self.current_layer)
 
-        self.scene.set_current_layer(
-            self.current_layer
-        )
-
-        # ---------------------------------------------------------
-        # Top toolbar
-        # ---------------------------------------------------------
+        # Refresh the confirmation bar any time annotations change
+        # (manual edit/delete or AI import) while this frame is open.
+        self.scene.annotation_changed.connect(self.refresh_frame_confirmation_indicator)
 
         self.top_toolbar = TopToolbar(self)
         self.addToolBar(self.top_toolbar)
 
-        # ---------------------------------------------------------
-        # Side / bottom toolbars
-        # ---------------------------------------------------------
-
         self.left_toolbar = self._create_left_toolbar()
-
         self.bottom_toolbar = BottomToolbar(self)
-        # self.bottom_toolbar.setMinimumHeight(250)
-
-        self.bottom_toolbar.previousFrame.connect(
-            self.previous_frame
-        )
-
-        self.bottom_toolbar.nextFrame.connect(
-            self.next_frame
-        )
-
-        self.bottom_toolbar.gotoFrame.connect(
-            self.goto_frame
-        )
-
-        # ---------------------------------------------------------
-        # Right AI sidebar
-        # ---------------------------------------------------------
+        self.bottom_toolbar.previousFrame.connect(self.previous_frame)
+        self.bottom_toolbar.nextFrame.connect(self.next_frame)
+        self.bottom_toolbar.gotoFrame.connect(self.goto_frame)
 
         self.right_sidebar = self._create_right_sidebar()
 
-        # IMPORTANT:
-        # Keep the AI sidebar fixed so it doesn't steal
-        # horizontal space from the image.
-        self.right_sidebar.setFixedWidth(280)
-
-        # ---------------------------------------------------------
-        # Central widget
-        # ---------------------------------------------------------
-
         central = QWidget()
         self.setCentralWidget(central)
+        central.setStyleSheet("QWidget { background-color: #1E1F24; }")
+
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ---------------------------------------------------------
-        # Main content
-        # ---------------------------------------------------------
-
         content_layout = QHBoxLayout()
-
         content_layout.setContentsMargins(0, 0, 0, 0)
-
         content_layout.setSpacing(0)
 
-        # Left toolbar
+        # NEW — confirmation bar + view stacked vertically, so it always
+        # sits directly above the "main frame" being edited.
+        self.confirmation_bar = ConfirmationBar()
+        self.confirmation_bar.confirmRequested.connect(self.confirm_current_frame)
+
+        view_container = QWidget()
+        view_layout = QVBoxLayout(view_container)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(0)
+        view_layout.addWidget(self.confirmation_bar)
+        view_layout.addWidget(self.view, 1)
+
         content_layout.addWidget(self.left_toolbar, 0)
-
-        # Image view
-
-        # Stretch = 1 means:
-        # "Give the view all remaining horizontal space."
-        content_layout.addWidget(self.view, 1)
-
+        content_layout.addWidget(view_container, 1)  # was: self.view directly
         content_layout.addWidget(self.right_sidebar, 0)
 
         main_layout.addLayout(content_layout, 1)
-
-        # Bottom toolbar
         main_layout.addWidget(self.bottom_toolbar, 0)
 
     def _create_left_toolbar(self):
@@ -184,40 +148,21 @@ class MainWindow(QMainWindow):
     def _create_right_sidebar(self):
         self.right_sidebar = RightSidebar(
             model_status=self.get_ai_model_status(),
+            model_paths=self.get_ai_model_paths(),
             parent=self,
         )
-
-        self.right_sidebar.detectRequested.connect(
-            self.run_ai_detection
-        )
-
-        self.right_sidebar.configureJobRequested.connect(
-            self.open_batch_inference
-        )
-
-        self.right_sidebar.settingsRequested.connect(
-            self.open_config
-        )
+        self.right_sidebar.detectRequested.connect(self.run_ai_detection)
+        self.right_sidebar.configureJobRequested.connect(self.open_batch_inference)
+        self.right_sidebar.settingsRequested.connect(self.open_config)
+        self.right_sidebar.setPathRequested.connect(self.set_model_path)
 
         return self.right_sidebar
 
     def get_ai_model_status(self):
-        """
-        Return whether the required AI models are configured.
-
-        Returns:
-            dict:
-                {
-                    "ball": bool,
-                    "players": bool,
-                    "actions": bool,
-                }
-        """
-
         return {
-            "ball": self.auto_annotator.ensure_loaded("ball"),
-            "players": self.auto_annotator.ensure_loaded("players"),
-            "actions": self.auto_annotator.ensure_loaded("actions"),
+            "ball": self.auto_annotator.is_configured("ball"),
+            "players": self.auto_annotator.is_configured("players"),
+            "actions": self.auto_annotator.is_configured("actions"),
         }
 
     def open_config(self):
@@ -226,17 +171,10 @@ class MainWindow(QMainWindow):
             self.refresh_ai_sidebar()
 
     def refresh_ai_sidebar(self):
-        """
-        Refresh the green/status indicators in the AI sidebar.
-        """
-
         if not hasattr(self, "right_sidebar"):
             return
-
-        self.right_sidebar.model_status = (
-            self.get_ai_model_status()
-        )
-
+        self.right_sidebar.model_status = self.get_ai_model_status()
+        self.right_sidebar.model_paths = self.get_ai_model_paths()
         self.right_sidebar.refresh_status()
 
     def run_ai_detection(self, model_name):
@@ -400,14 +338,13 @@ class MainWindow(QMainWindow):
         )
 
         self.scene.set_image(QPixmap.fromImage(qimage))
-        self.scene.set_image_scale(
-            self.original_width,
-            self.original_height,
-        )
+        self.scene.set_image_scale(self.original_width, self.original_height)
+        self.scene.set_media_context(path, "image", None)
 
         self.view.fit_image()
 
         self.load_annotations()
+        self.refresh_frame_confirmation_indicator()
 
     def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
         if self.cap is None:
@@ -463,9 +400,7 @@ class MainWindow(QMainWindow):
             )
             return
         self.original_frame = frame.copy()
-
         self.original_height, self.original_width = frame.shape[:2]
-
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = cv2.resize(frame, (960, 540))
 
@@ -478,17 +413,14 @@ class MainWindow(QMainWindow):
         )
 
         self.scene.set_image(QPixmap.fromImage(qimage))
-        self.scene.set_image_scale(
-            self.original_width,
-            self.original_height,
-        )
-
+        self.scene.set_image_scale(self.original_width, self.original_height)
+        self.scene.set_media_context(self.video_path, "video", frame_number)
         self.view.fit_image()
-
         self.load_annotations()
 
         # Update bottom toolbar
         self.bottom_toolbar.set_current_frame(frame_number)
+        self.refresh_frame_confirmation_indicator()
 
     # ---------------------------------------------------------
     # Navigation
@@ -613,6 +545,7 @@ class MainWindow(QMainWindow):
         self.scene.set_current_layer(layer_name)
         self.scene.clear_annotations()
         self.load_annotations()
+        self.refresh_frame_confirmation_indicator()
 
     def label_changed(self, label_name):
         self.current_label = label_name
@@ -632,17 +565,12 @@ class MainWindow(QMainWindow):
     def clear_current_frame_annotations(self):
         path, media_type, frame = self.current_media_info()
         layer = self.db.get_layer(self.current_layer)
-
         if path is None:
             return
 
-        self.scene.clear_annotations()
-
-        self.db.delete_annotations(
-            media_path=path,
-            layer_id=layer.layer_id,
-            frame_number=frame,
-        )
+        self.scene.clear_annotations(self.current_layer)
+        self.db.delete_annotations(media_path=path, layer_id=layer.layer_id, frame_number=frame)
+        self.refresh_frame_confirmation_indicator()
 
     # ---------------------------------------------------------
     # Undo/Redo Manager
@@ -656,39 +584,51 @@ class MainWindow(QMainWindow):
 
     def auto_annotate(self, model_key):
         frame = self.original_frame
-
         if frame is None:
-            QMessageBox.warning(
-                self,
-                "No frame",
-                "Please load an image or video first.",
-            )
+            QMessageBox.warning(self, "No frame", "Please load an image or video first.")
             return
 
         try:
             result = self.auto_annotator.predict(model_key, frame)
-
         except RuntimeError as e:
             QMessageBox.warning(self, "Model not configured", str(e))
             return
 
         layer = self.db.get_layer(self.current_layer)
+        path, media_type, frame_number = self.current_media_info()
+
         imported = self.scene.import_yolo_result(
-            result,
-            layer,
-            self.original_width,
-            self.original_height
+            result, layer, self.original_width, self.original_height,
+            path, media_type, frame_number,  # NEW args
         )
+
+        self.refresh_frame_confirmation_indicator()  # NEW — AI import resets review state
 
         if imported == 0:
             QMessageBox.information(
-                self,
-                "No matching labels",
-                (
-                    "The model produced detections, but none of the detected "
-                    "class names match the labels defined for the active layer."
-                ),
+                self, "No matching labels",
+                "The model produced detections, but none of the detected "
+                "class names match the labels defined for the active layer.",
             )
+
+    def confirm_current_frame(self):
+        path, media_type, frame = self.current_media_info()
+        if path is None:
+            return
+        layer = self.db.get_layer(self.current_layer)
+        self.db.confirm_frame(path, layer.layer_id, frame)
+        self.refresh_frame_confirmation_indicator()
+
+    def refresh_frame_confirmation_indicator(self):
+        path, media_type, frame = self.current_media_info()
+        if path is None:
+            self.confirmation_bar.set_confirmed(False, "", "")
+            return
+
+        layer = self.db.get_layer(self.current_layer)
+        confirmed = self.db.is_frame_confirmed(path, layer.layer_id, frame)
+        frame_label = f"Frame {frame}" if frame is not None else "Image"
+        self.confirmation_bar.set_confirmed(confirmed, self.current_layer, frame_label)
 
     def run_batch_inference_on_frame(self, frame_number, model_keys):
         imported_total = 0
@@ -758,12 +698,10 @@ class MainWindow(QMainWindow):
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 annotations.append(
                     Annotation(
-                        media_name=path,
-                        frame_number=frame_number,
-                        shape_type='rectangle',
-                        label=labels[name],
-                        layer=layer,
-                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                        media_name=path, frame_number=frame_number,
+                        shape_type='rectangle', label=labels[name], layer=layer,
+                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
+                        is_ai_generated=True, confirmed=False
                     )
                 )
                 imported += 1
@@ -864,3 +802,19 @@ class MainWindow(QMainWindow):
             "Export Failed",
             f"Could not export YOLO dataset:\n\n{message}",
         )
+
+    def get_ai_model_paths(self):
+        return {
+            "ball": self.db.get_model_path("ball"),
+            "players": self.db.get_model_path("players"),
+            "actions": self.db.get_model_path("actions"),
+        }
+
+    def set_model_path(self, model_key):
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Select {model_key} model", "", "Model files (*.pt *.onnx);;All Files (*)",
+        )
+        if not path:
+            return
+        self.db.set_model_path(model_key, path)
+        self.refresh_ai_sidebar()

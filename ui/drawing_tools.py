@@ -250,12 +250,15 @@ class BaseAnnotationItem:
         self._update_label_position()
         self.update()
 
-        # If the item is in a scene, try to emit a change signal
         if self.scene():
             try:
                 self.scene().annotation_changed.emit()
             except Exception:
-                pass  # Signal might not exist on the scene
+                pass
+            try:
+                self.scene()._unconfirm_frame_for_layer(self.layer_name)  # NEW
+            except Exception:
+                pass
 
     def _update_visual_state(self):
         """

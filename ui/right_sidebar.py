@@ -1,38 +1,20 @@
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QFrame,
-    QSizePolicy,
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy
 from PyQt6.QtGui import QIcon, QPixmap
 
 ICON_SIZE = 30
 
+
 class SectionHeader(QWidget):
 
-    def __init__(
-            self,
-            title,
-            icon_path,
-            parent=None,
-    ):
+    def __init__(self, title, icon_path, parent=None):
         super().__init__(parent)
-
         layout = QHBoxLayout(self)
-
         layout.setContentsMargins(2, 4, 2, 6, )
-
         layout.setSpacing(8)
-
         icon = QLabel()
-
         pixmap = QPixmap(icon_path)
-
         icon.setPixmap(
             pixmap.scaled(
                 ICON_SIZE + 20,
@@ -42,11 +24,7 @@ class SectionHeader(QWidget):
             )
         )
 
-        icon.setFixedSize(
-            ICON_SIZE + 20,
-            ICON_SIZE + 20,
-        )
-
+        icon.setFixedSize(ICON_SIZE + 20, ICON_SIZE + 20)
         layout.addWidget(icon)
         label = QLabel(title)
         label.setObjectName("headerTitle")
@@ -55,147 +33,85 @@ class SectionHeader(QWidget):
 
 
 class DetectionRow(QWidget):
-    """
-    One AI detection item in the right sidebar.
-
-    Example:
-
-        ✓  Ball segmentation       [Run]
-
-    or
-
-        ✗  Ball segmentation       [Run]
-    """
-
     clicked = pyqtSignal()
+    pathRequested = pyqtSignal()   # NEW — user wants to (re)set this model's path
 
-    def __init__(self, key, title, icon_path, icon_size: int, configured=False, parent=None):
+    def __init__(
+            self,
+            key,
+            title,
+            icon_path,
+            icon_size: int,
+            configured=False,
+            model_path=None,
+            parent=None
+    ):
         super().__init__(parent)
-
         self.key = key
         self.title = title
         self.configured = configured
+        self.model_path = model_path
 
         self.setup_ui(icon_path, icon_size)
-        self.update_status(configured)
-
-    # ---------------------------------------------------------
-    # UI
-    # ---------------------------------------------------------
+        self.update_status(configured, model_path)
 
     def setup_ui(self, icon_path, icon_size):
-
         self.setObjectName("detectionRow")
 
         layout = QHBoxLayout(self)
-
         layout.setContentsMargins(8, 6, 8, 6)
-
         layout.setSpacing(8)
 
-        # ---------------------------------------------------------
         # Model icon
-        # ---------------------------------------------------------
-
         self.icon_label = QLabel()
-
         pixmap = QPixmap(icon_path)
-
         self.icon_label.setPixmap(
-            pixmap.scaled(
-                icon_size,
-                icon_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            pixmap.scaled(icon_size, icon_size,
+                          Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation)
         )
+        self.icon_label.setFixedSize(icon_size, icon_size)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.icon_label)
 
-        self.icon_label.setFixedSize(
-            icon_size,
-            icon_size,
-        )
-
-        self.icon_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-
-        layout.addWidget(
-            self.icon_label
-        )
-
-        # ---------------------------------------------------------
         # Status
-        # ---------------------------------------------------------
-
         self.status_label = QLabel()
-
         self.status_label.setFixedWidth(16)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
 
-        self.status_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-
-        layout.addWidget(
-            self.status_label
-        )
-
-        # ---------------------------------------------------------
         # Name
-        # ---------------------------------------------------------
+        self.name_label = QLabel(self.title)
+        self.name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.name_label)
 
-        self.name_label = QLabel(
-            self.title
-        )
+        # NEW — inline "set model path" button
+        self.path_button = QPushButton("…")
+        self.path_button.setObjectName("pathButton")
+        self.path_button.setFixedSize(28, 28)
+        self.path_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.path_button.clicked.connect(self.pathRequested.emit)
+        layout.addWidget(self.path_button)
 
-        self.name_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
-        )
-
-        layout.addWidget(
-            self.name_label
-        )
-
-        # ---------------------------------------------------------
         # Run
-        # ---------------------------------------------------------
+        self.run_button = QPushButton("Run")
+        self.run_button.setFixedHeight(28)
+        self.run_button.setFixedWidth(55)
+        self.run_button.clicked.connect(self.clicked.emit)
+        layout.addWidget(self.run_button)
 
-        self.run_button = QPushButton(
-            "Run"
-        )
-
-        self.run_button.setFixedHeight(
-            28
-        )
-
-        self.run_button.setFixedWidth(
-            55
-        )
-
-        self.run_button.clicked.connect(
-            self.clicked.emit
-        )
-
-        layout.addWidget(
-            self.run_button
-        )
-
-    # ---------------------------------------------------------
-    # State
-    # ---------------------------------------------------------
-
-    def update_status(self, configured):
+    def update_status(self, configured, model_path=None):
         self.configured = configured
+        if model_path is not None:
+            self.model_path = model_path
 
         self.status_label.setText("✓" if configured else "!")
         self.status_label.setObjectName("statusOk" if configured else "statusWarn")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
-        # We still allow clicking the button even when unconfigured.
-        # MainWindow will show the appropriate error.
+        self.path_button.setToolTip(self.model_path or "No model path set — click to choose one")
         self.run_button.setEnabled(True)
-
 
 class RightSidebar(QWidget):
     """
@@ -214,14 +130,15 @@ class RightSidebar(QWidget):
     detectRequested = pyqtSignal(str)
     configureJobRequested = pyqtSignal()
     settingsRequested = pyqtSignal()
+    setPathRequested = pyqtSignal(str)
 
-    def __init__(self, model_status=None, parent=None):
+    def __init__(self, model_status=None, model_paths=None, parent=None):
         super().__init__(parent)
-
         self.model_status = model_status or {}
+        self.model_paths = model_paths or {}  # NEW
 
         self.setObjectName("rightSidebar")
-        self.setFixedWidth(300)
+        self.setFixedWidth(340)  # widened from 300 to fit the inline path button
 
         self.setup_ui()
         self.refresh_status()
@@ -264,36 +181,34 @@ class RightSidebar(QWidget):
             "Ball",
             "./resources/icons/right_sidebar/ball.png",
             icon_size=30,
+            model_path=self.model_paths.get("ball"),
             parent=self,
         )
-
         self.players_row = DetectionRow(
             "players",
             "Players",
             "./resources/icons/right_sidebar/players.png",
             icon_size=30,
-            parent=self,
+            model_path=self.model_paths.get("players"),
+            parent=self
         )
-
         self.actions_row = DetectionRow(
             "actions",
             "Actions",
             "./resources/icons/right_sidebar/actions.png",
             icon_size=30,
+            model_path=self.model_paths.get("actions"),
             parent=self,
         )
 
-        self.ball_row.clicked.connect(
-            lambda: self.detectRequested.emit("ball")
-        )
+        self.ball_row.clicked.connect(lambda: self.detectRequested.emit("ball"))
+        self.players_row.clicked.connect(lambda: self.detectRequested.emit("players"))
+        self.actions_row.clicked.connect(lambda: self.detectRequested.emit("actions"))
 
-        self.players_row.clicked.connect(
-            lambda: self.detectRequested.emit("players")
-        )
+        self.ball_row.pathRequested.connect(lambda: self.setPathRequested.emit("ball"))
+        self.players_row.pathRequested.connect(lambda: self.setPathRequested.emit("players"))
+        self.actions_row.pathRequested.connect(lambda: self.setPathRequested.emit("actions"))
 
-        self.actions_row.clicked.connect(
-            lambda: self.detectRequested.emit("actions")
-        )
 
         main_layout.addWidget(self.ball_row)
         main_layout.addWidget(self.players_row)
@@ -304,111 +219,61 @@ class RightSidebar(QWidget):
         # -----------------------------------------------------
 
         separator = QFrame()
-        separator.setFrameShape(
-            QFrame.Shape.HLine
-        )
-
+        separator.setFrameShape(QFrame.Shape.HLine)
         main_layout.addWidget(separator)
 
         # -----------------------------------------------------
         # Configure Job
         # -----------------------------------------------------
 
-        self.configure_button = QPushButton(
-            "Quick Annotate"
-        )
-
-        self.configure_button.setIcon(
-            QIcon("./resources/icons/right_sidebar/thunder.png")
-        )
-
-        self.configure_button.setIconSize(
-            QSize(25, 25)
-        )
-
-
+        self.configure_button = QPushButton("Quick Annotate")
+        self.configure_button.setIcon(QIcon("./resources/icons/right_sidebar/thunder.png"))
+        self.configure_button.setIconSize(QSize(25, 25))
         self.configure_button.setFixedHeight(38)
-        self.configure_button.setCursor(
-            Qt.CursorShape.PointingHandCursor
-        )
-
-        self.configure_button.clicked.connect(
-            self.configureJobRequested.emit
-        )
-
-        main_layout.addWidget(
-            self.configure_button
-        )
+        self.configure_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.configure_button.clicked.connect(self.configureJobRequested.emit)
+        main_layout.addWidget(self.configure_button)
 
         # -----------------------------------------------------
         # Settings
         # -----------------------------------------------------
 
-        self.settings_button = QPushButton(
-            "Configurations"
-        )
-
-        self.settings_button.setIcon(
-            QIcon("./resources/icons/right_sidebar/settings.png")
-        )
-
-
+        self.settings_button = QPushButton("Configurations")
+        self.settings_button.setIcon(QIcon("./resources/icons/right_sidebar/settings.png"))
         self.settings_button.setFixedHeight(38)
-        self.settings_button.setCursor(
-            Qt.CursorShape.PointingHandCursor
-        )
-
-        self.settings_button.clicked.connect(
-            self.settingsRequested.emit
-        )
-
-        main_layout.addWidget(
-            self.settings_button
-        )
-
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_button.clicked.connect(self.settingsRequested.emit)
+        main_layout.addWidget(self.settings_button)
         # Push everything to the top
         main_layout.addStretch()
-
 
     # ---------------------------------------------------------
     # Model status
     # ---------------------------------------------------------
 
-    def set_model_status(self, model_name, configured):
-        """
-        Update the status of one detector.
-
-        model_name:
-            "ball"
-            "players"
-            "actions"
-        """
-
+    def set_model_status(self, model_name, configured, model_path=None):
         if model_name == "ball":
-            self.ball_row.update_status(configured)
-
+            self.ball_row.update_status(configured, model_path)
         elif model_name == "players":
-            self.players_row.update_status(configured)
-
+            self.players_row.update_status(configured, model_path)
         elif model_name == "actions":
-            self.actions_row.update_status(configured)
+            self.actions_row.update_status(configured, model_path)
 
     def refresh_status(self):
-        """
-        Refresh all model status indicators.
-        """
-
         self.set_model_status(
             "ball",
             self.model_status.get("ball", False),
+            self.model_paths.get("ball")
         )
-
         self.set_model_status(
             "players",
             self.model_status.get("players", False),
+            self.model_paths.get("players")
         )
-
         self.set_model_status(
             "actions",
             self.model_status.get("actions", False),
+            self.model_paths.get("actions")
         )
+
+

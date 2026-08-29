@@ -290,3 +290,76 @@ def tooltip() -> str:
         font-weight: {Typography.WEIGHT_BOLD_QSS};
     }}
     """
+
+
+def detection_row(scope: str) -> str:
+    """Card-style background for each DetectionRow in the right sidebar."""
+    return f"""
+    #{scope} QWidget#detectionRow {{
+        background: {Colors.BG_SURFACE};
+        border: 1px solid {Colors.BORDER};
+        border-radius: 8px;
+    }}
+
+    #{scope} QWidget#detectionRow:hover {{
+        border-color: {Colors.BORDER_HOVER};
+    }}
+    """
+
+
+def icon_button(scope: str) -> str:
+    """Small square icon/text-only buttons, e.g. the inline model-path
+    picker ("…") in each DetectionRow."""
+    return f"""
+    #{scope} QPushButton#pathButton {{
+        background: transparent;
+        border: 1px solid {Colors.BORDER};
+        border-radius: 6px;
+        color: {Colors.TEXT_MUTED};
+        font-weight: {Typography.WEIGHT_BOLD_QSS};
+    }}
+
+    #{scope} QPushButton#pathButton:hover {{
+        background: {Colors.BG_HOVER_ALT};
+        border-color: {Colors.BORDER_HOVER};
+        color: {Colors.TEXT_PRIMARY};
+    }}
+    """
+
+
+def confirmation_bar(scope: str = "confirmationBar") -> str:
+    return f"""
+    QWidget#{scope} {{
+        background: {Colors.BG_PANEL_ALT};
+        border-bottom: 1px solid {Colors.BORDER};
+    }}
+
+    QWidget#{scope}[state="confirmed"] {{
+        background: rgba(76, 175, 80, 40);
+        border-bottom: 1px solid {Colors.SUCCESS};
+    }}
+
+    QWidget#{scope}[state="unconfirmed"] {{
+        background: rgba(224, 164, 88, 35);
+        border-bottom: 1px solid {Colors.WARNING};
+    }}
+
+    #{scope} QLabel#confirmationText {{
+        color: {Colors.TEXT_PRIMARY};
+        font-weight: {Typography.WEIGHT_BOLD_QSS};
+    }}
+
+    #{scope} QPushButton#confirmButton {{
+        background: {Colors.ACCENT};
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 4px 12px;
+        font-weight: {Typography.WEIGHT_BOLD_QSS};
+    }}
+
+    #{scope} QPushButton#confirmButton:disabled {{
+        background: {Colors.BG_SURFACE};
+        color: {Colors.TEXT_DISABLED};
+    }}
+    """

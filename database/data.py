@@ -30,3 +30,5 @@ class Annotation:
     shape_type: str
     geometry: dict | list
     annotation_id: Optional[int] = None  # Optional ID for reference
+    is_ai_generated: bool = False  # NEW
+    confirmed: bool = True  # NEW — human-drawn defaults to confirmed

@@ -21,13 +21,7 @@ class BatchInferenceWorker(QThread):
     status_changed = pyqtSignal(str)
     finished_successfully = pyqtSignal(dict)
 
-    def __init__(
-            self,
-            main_window,
-            selected_models,
-            start_frame,
-            end_frame,
-    ):
+    def __init__(self, main_window, selected_models, start_frame, end_frame):
         super().__init__()
 
         self.main_window = main_window

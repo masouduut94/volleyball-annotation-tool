@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineI
                              QGraphicsEllipseItem, QMenu, QMessageBox)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
-from ui.undo_manager import DeleteAnnotationCommand, CreateAnnotationCommand, ChangeLabelCommand
+from ui.undo_manager import DeleteAnnotationCommand, CreateAnnotationCommand, ChangeLabelCommand, \
+    BulkCreateAnnotationCommand
 from database.db import DatabaseManager
 from vb_gui.vb_annotator.database.data import Layer, Label, Annotation
 
@@ -104,6 +105,10 @@ class AnnotationScene(QGraphicsScene):
         self.display_height = 540
         self.scale_x = 1.0  # Scale factor from display to original width
         self.scale_y = 1.0  # Scale factor from display to original height
+
+        self.current_media_path = None
+        self.current_media_type = None
+        self.current_frame_number = None
 
     # ---------------------------------------------------------
     # Image Management
@@ -411,6 +416,9 @@ class AnnotationScene(QGraphicsScene):
             "type": "rectangle",
             "label": self.current_label,
             "color": self.current_color,
+            "is_ai_generated": False,
+            "confirmed": True,
+            "annotation_id": None
         }
 
         cmd = CreateAnnotationCommand(self, record, self.current_layer)
@@ -622,32 +630,57 @@ class AnnotationScene(QGraphicsScene):
         cmd = ChangeLabelCommand(self, target, target["label"], target["color"], label, color)
         self.undo_stack.push(cmd)
 
+    def set_media_context(self, media_path, media_type, frame_number):
+        """Called by MainWindow whenever the loaded frame/image changes, so
+        undo commands know which (media, frame) to write to / unconfirm."""
+        self.current_media_path = media_path
+        self.current_media_type = media_type
+        self.current_frame_number = frame_number
+
+    def _unconfirm_frame_for_layer(self, layer_name: Optional[str]):
+        """Invalidate any prior human confirmation for (current media,
+        layer_name, current frame). Called by every command that changes
+        an annotation's existence, geometry, or label."""
+        if layer_name is None or self.current_media_path is None:
+            return
+        layer = self.db.get_layer(layer_name)
+        if layer is None:
+            return
+        self.db.unconfirm_frame(self.current_media_path, layer.layer_id, self.current_frame_number)
 
     # ---------------------------------------------------------
     # Annotation Management
     # ---------------------------------------------------------
 
     def delete_hovered_item(self):
-        """
-        Delete the currently hovered annotation item (undoable).
-        """
         if self.hovered_item is None:
             return
 
-        layer = self.hovered_item.layer_name
-
+        layer_name = self.hovered_item.layer_name
         target_record = None
-        for record in self.layer_items.get(layer, []):
+        for record in self.layer_items.get(layer_name, []):
             if record["item"] == self.hovered_item:
                 target_record = record
                 break
-
         if target_record is None:
             return
 
-        cmd = DeleteAnnotationCommand(self, target_record, layer)
-        self.undo_stack.push(cmd)  # push() calls redo() immediately, performing the delete
+        layer = self.db.get_layer(layer_name)
+        original_width = self.scale_x * self.display_width
+        original_height = self.scale_y * self.display_height
 
+        cmd = DeleteAnnotationCommand(
+            self,
+            target_record,
+            layer_name,
+            self.current_media_path,
+            self.current_media_type,
+            original_width,
+            original_height,
+            self.current_frame_number,
+            layer,
+        )
+        self.undo_stack.push(cmd)
         self.hovered_item = None
 
     def clear_annotations(self, layer_name=None):
@@ -733,73 +766,44 @@ class AnnotationScene(QGraphicsScene):
 
         return annotations
 
-    def load_annotations(
-            self,
-            annotations: List[Annotation],
-            layer_name: str,
-    ):
-        """
-        Load annotations from database objects into the scene.
-
-        Args:
-            annotations: List of Annotation objects to load
-            layer_name: Name of the layer these annotations belong to
-        """
+    def load_annotations(self, annotations: List[Annotation], layer_name: str):
         for ann in annotations:
-            # Get label color or use default
             color = ann.label.color if ann.label.color is not None else "#00FF00"
 
-            # Create appropriate annotation item based on shape type
             if ann.shape_type == "rectangle":
                 g = ann.geometry
-
                 rect = QRectF(
                     g["x"] / self.scale_x,
                     g["y"] / self.scale_y,
                     g["width"] / self.scale_x,
-                    g["height"] / self.scale_y,
+                    g["height"] / self.scale_y
                 )
-
                 item = AnnotationRectItem(rect, color, ann.label.name)
-
             elif ann.shape_type == "polygon":
                 polygon = QPolygonF(
-                    [
-                        QPointF(
-                            x / self.scale_x,
-                            y / self.scale_y,
-                        )
-                        for x, y in ann.geometry
-                    ]
+                    [QPointF(x / self.scale_x, y / self.scale_y) for x, y in ann.geometry]
                 )
-
                 item = AnnotationPolygonItem(polygon, color, ann.label.name)
-
             else:
-                continue  # Skip unknown shape types
+                continue
 
-            # Set layer information
             item.layer_name = ann.layer.name
 
-            # Set Z-order based on layer type
-            z_values = {
-                "court": 0,  # Bottom layer
-                "players": 10,  # Middle layer
-                "ball": 20,  # Above players
-                "actions": 30,  # Top layer
-            }
+            z_values = {"court": 0, "players": 10, "ball": 20, "actions": 30}
             item.setZValue(z_values.get(layer_name, 0))
 
-            # Add to scene and storage
             self.addItem(item)
 
-            self.layer_items[self.current_layer].append(
+            self.layer_items[layer_name].append(   # FIXED: was self.current_layer
                 {
                     "item": item,
                     "type": ann.shape_type,
                     "label": ann.label.name,
                     "color": color,
                     "layer": ann.layer.name,
+                    "annotation_id": ann.annotation_id,
+                    "is_ai_generated": ann.is_ai_generated,
+                    "confirmed": ann.confirmed,
                 }
             )
 
@@ -809,133 +813,89 @@ class AnnotationScene(QGraphicsScene):
             layer: Layer,
             original_width: int,
             original_height: int,
+            media_path: str,  # NEW — needed to persist to DB
+            media_type: str,  # NEW
+            frame_number: Optional[int],  # NEW
     ) -> int:
         """
-        Import detections from a YOLO model result.
-
-        Supports both segmentation masks and bounding boxes.
-
-        Args:
-            result: YOLO model result object
-            layer: Layer object for the annotations
-            original_width: Width of the original image
-            original_height: Height of the original image
-
-        Returns:
-            Number of successfully imported annotations
+        Import detections from a YOLO model result as ONE undoable batch.
+        Scene items + DB rows are created together via
+        BulkCreateAnnotationCommand; each row is flagged
+        is_ai_generated=True, confirmed=False.
         """
-        # Calculate scale factors from original to display
         sx = self.display_width / original_width
         sy = self.display_height / original_height
 
-        # Create mapping from label names to Label objects
         layer_labels: Dict[str, Label] = {
-            label.name.lower(): label
-            for label in layer.labels
+            label.name.lower(): label for label in layer.labels
         }
 
-        imported = 0
+        records = []
+        db_annotations = []
 
-        # --------------------------------------------------
-        # Import segmentation masks (polygons)
-        # --------------------------------------------------
+        def _queue(item, shape_type, label, geometry_original):
+            item.layer_name = layer.name
+            records.append({
+                "item": item,
+                "type": shape_type,
+                "label": label.name,
+                "color": label.color,
+                "is_ai_generated": True,
+                "confirmed": False,
+                "annotation_id": None,  # filled in by the command after insert
+            })
+            db_annotations.append(
+                Annotation(
+                    media_name=media_path,
+                    layer=layer,
+                    label=label,
+                    frame_number=frame_number,
+                    shape_type=shape_type,
+                    geometry=geometry_original,
+                )
+            )
+
         if result.masks is not None:
             for mask, cls in zip(result.masks.xy, result.boxes.cls):
                 name = result.names[int(cls)].lower()
-
-                # Special case: YOLO person detection mapped to player
-                if layer.name == 'players':
-                    if name == 'person':
-                        name = 'player'
-
-                # Skip if label not in this layer
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
                 if name not in layer_labels:
                     continue
-
                 label = layer_labels[name]
 
-                # Convert mask points to polygon
-                points = [
-                    QPointF(x * sx, y * sy)
-                    for x, y in mask
-                ]
+                polygon = QPolygonF([QPointF(x * sx, y * sy) for x, y in mask])
+                item = AnnotationPolygonItem(polygon, label.color, label.name)
+                geometry_original = [[float(x), float(y)] for x, y in mask]
+                _queue(item, "polygon", label, geometry_original)
 
-                polygon = QPolygonF(points)
-
-                # Create and add polygon annotation
-                item = AnnotationPolygonItem(
-                    polygon,
-                    label.color,
-                    label.name,
-                )
-
-                item.layer_name = layer.name
-                self.addItem(item)
-
-                self.layer_items[self.current_layer].append(
-                    {
-                        "item": item,
-                        "type": "polygon",
-                        "label": label.name,
-                        "color": label.color,
-                        "layer": layer.name,
-                    }
-                )
-            imported += 1
-
-        # --------------------------------------------------
-        # Import detection boxes (rectangles)
-        # --------------------------------------------------
         elif result.boxes is not None:
             for box in result.boxes:
                 cls = int(box.cls[0])
-
                 name = result.names[cls].lower()
-
-                # Special case: YOLO person detection mapped to player
-                if layer.name == 'players':
-                    if name == 'person':
-                        name = 'player'
-
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
                 if name not in layer_labels:
                     continue
-
                 label = layer_labels[name]
 
-                # Get bounding box coordinates
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
+                rect_display = QRectF(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy)
+                item = AnnotationRectItem(rect_display, label.color, label.name)
+                geometry_original = {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                _queue(item, "rectangle", label, geometry_original)
 
-                rect = QRectF(
-                    x1 * sx,
-                    y1 * sy,
-                    (x2 - x1) * sx,
-                    (y2 - y1) * sy,
-                )
+        if not records:
+            return 0
 
-                # Create and add rectangle annotation
-                item = AnnotationRectItem(
-                    rect,
-                    label.color,
-                    label.name,
-                )
+        cmd = BulkCreateAnnotationCommand(
+            scene=self, db=self.db, layer_name=layer.name,
+            media_path=media_path, media_type=media_type,
+            width=original_width, height=original_height,
+            frame_number=frame_number, layer=layer,
+            records=records, annotations_for_db=db_annotations,
+            description=f"AI import ({layer.name})",
+        )
+        self.undo_stack.push(cmd)
 
-                item.layer_name = layer.name
-
-                self.addItem(item)
-
-                self.layer_items[self.current_layer].append(
-                    {
-                        "item": item,
-                        "type": "rectangle",
-                        "label": label.name,
-                        "color": label.color,
-                        "layer": layer.name,
-                    }
-                )
-
-                imported += 1
-
-        # Notify of changes
-        self.annotation_changed.emit()
-
-        return imported
+        return len(records)

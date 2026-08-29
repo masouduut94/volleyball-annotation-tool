@@ -1,19 +1,18 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy.exc import IntegrityError
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, joinedload, selectinload
-from sqlalchemy import func
 
 from .schema import (
     Base,
-    Layer as SQLALayer,
     LayerLabel,
     Media,
-    Annotation as SQLAAnnotation,
     ModelConfig,
+    FrameReview,
+    Annotation as SQLAAnnotation,
+    Layer as SQLALayer,
 )
 from .data import Label, Layer, Annotation
 
@@ -193,10 +192,7 @@ class DatabaseManager:
         with self.Session() as session:
             return session.query(Media).order_by(Media.created_at.desc()).all()
 
-    def get_media_annotations(
-            self,
-            media_path: str,
-    ) -> List[Annotation]:
+    def get_media_annotations(self, media_path: str) -> List[Annotation]:
 
         with self.Session() as session:
 
@@ -246,6 +242,8 @@ class DatabaseManager:
                         frame_number=r.frame_number,
                         shape_type=r.shape_type,
                         geometry=json.loads(r.geometry),
+                        is_ai_generated=r.is_ai_generated,
+                        confirmed=r.confirmed,
                     )
                 )
 
@@ -368,6 +366,8 @@ class DatabaseManager:
                         frame_number=r.frame_number,
                         shape_type=r.shape_type,
                         geometry=json.loads(r.geometry),
+                        is_ai_generated=r.is_ai_generated,
+                        confirmed=r.confirmed,
                     )
                 )
 
@@ -391,6 +391,189 @@ class DatabaseManager:
             ).delete()
 
             session.commit()
+
+    # ------------------------------------------------------------------
+    # AI provenance / frame review
+    # ------------------------------------------------------------------
+
+    def insert_ai_annotations(
+            self,
+            media_path: str,
+            media_type: str,
+            width: int,
+            height: int,
+            layer: Layer,
+            frame_number: Optional[int],
+            annotations: List[Annotation],
+    ) -> List[int]:
+        """
+        Insert a batch of AI-generated annotations immediately — unlike
+        save_annotations(), this does NOT wipe existing rows for the
+        frame/layer first. Every row is flagged is_ai_generated=True,
+        confirmed=False.
+
+        Returns the DB ids assigned, in the same order as `annotations`,
+        so the caller (BulkCreateAnnotationCommand) can undo exactly this
+        batch by id, without touching anything a human confirmed later.
+        """
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+
+            if media is None:
+                media = Media(path=media_path, media_type=media_type, width=width, height=height)
+                session.add(media)
+                session.commit()
+                session.refresh(media)
+
+            ids = []
+            for ann in annotations:
+                record = SQLAAnnotation(
+                    media_id=media.id,
+                    layer_id=layer.layer_id,
+                    label_id=ann.label.label_id,
+                    frame_number=frame_number,
+                    shape_type=ann.shape_type,
+                    geometry=json.dumps(ann.geometry),
+                    is_ai_generated=True,
+                    confirmed=False,
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+                ids.append(record.id)
+
+            # New unconfirmed detections invalidate any prior human sign-off
+            self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
+
+            return ids
+
+    def delete_annotations_by_ids(self, ids: List[int]):
+        """Delete specific annotation rows by id — used to undo an AI batch
+        without touching anything else in the frame/layer."""
+        if not ids:
+            return
+        with self.Session() as session:
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.id.in_(ids)
+            ).delete(synchronize_session=False)
+            session.commit()
+
+    def confirm_frame(self, media_path: str, layer_id: int, frame_number: Optional[int]):
+        """
+        Human sign-off: mark every annotation currently stored for this
+        media/layer/frame as confirmed, and upsert a FrameReview row.
+        """
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return
+
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.media_id == media.id,
+                SQLAAnnotation.layer_id == layer_id,
+                SQLAAnnotation.frame_number == frame_number,
+            ).update({"confirmed": True}, synchronize_session=False)
+
+            review = (
+                session.query(FrameReview)
+                .filter(
+                    FrameReview.media_id == media.id,
+                    FrameReview.layer_id == layer_id,
+                    FrameReview.frame_number == frame_number,
+                )
+                .first()
+            )
+
+            if review is None:
+                review = FrameReview(
+                    media_id=media.id, layer_id=layer_id, frame_number=frame_number,
+                    confirmed=True, confirmed_at=datetime.utcnow(),
+                )
+                session.add(review)
+            else:
+                review.confirmed = True
+                review.confirmed_at = datetime.utcnow()
+
+            session.commit()
+
+    def is_frame_confirmed(self, media_path: str, layer_id: int, frame_number: Optional[int]) -> bool:
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return False
+
+            review = (
+                session.query(FrameReview)
+                .filter(
+                    FrameReview.media_id == media.id,
+                    FrameReview.layer_id == layer_id,
+                    FrameReview.frame_number == frame_number,
+                )
+                .first()
+            )
+            return bool(review and review.confirmed)
+
+    def _reset_frame_review(self, session, media_id, layer_id, frame_number):
+        review = (
+            session.query(FrameReview)
+            .filter(
+                FrameReview.media_id == media_id,
+                FrameReview.layer_id == layer_id,
+                FrameReview.frame_number == frame_number,
+            )
+            .first()
+        )
+        if review is not None and review.confirmed:
+            review.confirmed = False
+            session.commit()
+
+    def insert_annotation(self, media_path, media_type, width, height,
+                           layer: Layer, frame_number, annotation: Annotation) -> int:
+        """
+        Insert exactly one annotation row and return its id, preserving
+        is_ai_generated/confirmed. Used by DeleteAnnotationCommand.undo()
+        to restore a deleted row exactly as it was — not as a fresh
+        human-drawn one — regardless of how it originally got there.
+        """
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                media = Media(path=media_path, media_type=media_type, width=width, height=height)
+                session.add(media)
+                session.commit()
+                session.refresh(media)
+
+            record = SQLAAnnotation(
+                media_id=media.id,
+                layer_id=layer.layer_id,
+                label_id=annotation.label.label_id,
+                frame_number=frame_number,
+                shape_type=annotation.shape_type,
+                geometry=json.dumps(annotation.geometry),
+                is_ai_generated=annotation.is_ai_generated,
+                confirmed=annotation.confirmed,
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record.id
+
+    def update_annotation_label(self, annotation_id: int, label_id: int):
+        """Persist a label change immediately for an already-saved row, so
+        switching layers/frames doesn't silently revert it (same class of
+        bug as the delete-reappear issue, applied to label edits)."""
+        with self.Session() as session:
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.id == annotation_id
+            ).update({"label_id": label_id}, synchronize_session=False)
+            session.commit()
+
+    def unconfirm_frame(self, media_path: str, layer_id: int, frame_number: Optional[int]):
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return
+            self._reset_frame_review(session, media.id, layer_id, frame_number)
 
     # ------------------------------------------------------------------
     # AI models

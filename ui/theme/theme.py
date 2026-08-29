@@ -34,6 +34,15 @@ def right_sidebar_style(scope: str = "rightSidebar") -> str:
         c.header_label(scope),
         c.surface_button(scope),
         c.status_labels(scope),
+        c.detection_row(scope),
+        c.icon_button(scope)
+    ])
+
+
+def confirmation_bar_style(scope: str = "confirmationBar") -> str:
+    return "\n".join([
+        c.confirmation_bar(scope),
+        c.status_labels(scope),  # reuses the existing statusOk/statusWarn rules
     ])
 
 
