@@ -302,14 +302,6 @@ class LayerRow(QWidget):
         layout.setContentsMargins(8, 6, 8, 6)
 
         self.name_btn = QPushButton(layer_name)
-        self.name_btn.setStyleSheet(
-            """
-                QPushButton:hover {
-                        background: #383C47;
-                        border-color: #E95420;
-                    }
-            """
-        )
         self.name_btn.setFlat(True)
         self.name_btn.clicked.connect(
             lambda: self.clicked.emit(layer_name)
@@ -381,15 +373,3 @@ class LabelRow(QPushButton):
         self.label_name = name
         self.setText(f"●  {name}")
 
-        self.setStyleSheet(f"""
-            QPushButton {{
-                text-align:left;
-                padding:8px;
-                border-radius:8px;
-                color:#333;
-            }}
-
-            QPushButton:hover {{
-                background:#ECECF2;
-            }}
-        """)

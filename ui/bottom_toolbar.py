@@ -26,17 +26,6 @@ class FrameSlider(QSlider):
 
         # Create a label to show the frame number
         self.frame_label = QLabel(self)
-        self.frame_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(0, 0, 0, 200);
-                color: white;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 4px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-        """)
         self.frame_label.hide()
         self.frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 

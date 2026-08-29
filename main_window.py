@@ -136,19 +136,8 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-
-        central.setStyleSheet(
-            """
-            QWidget {
-                background-color: #1E1F24;
-            }
-            """
-        )
-
         main_layout = QVBoxLayout(central)
-
         main_layout.setContentsMargins(0, 0, 0, 0)
-
         main_layout.setSpacing(0)
 
         # ---------------------------------------------------------

@@ -98,7 +98,6 @@ class BatchInferenceDialog(QDialog):
         # --------------------------------------------------
 
         title = QLabel("Models")
-        title.setStyleSheet(f"font-weight:bold; font-size:{Typography.SIZE_MD};")
         layout.addWidget(title)
 
         self.ball_cb = QCheckBox("Ball segmentation")
@@ -115,9 +114,6 @@ class BatchInferenceDialog(QDialog):
         layout.addSpacing(10)
 
         layer_title = QLabel("Target layers")
-        layer_title.setStyleSheet(
-            "font-weight:bold; font-size:14px;"
-        )
         layout.addWidget(layer_title)
 
         layout.addWidget(
@@ -139,9 +135,6 @@ class BatchInferenceDialog(QDialog):
         layout.addSpacing(10)
 
         frames_title = QLabel("Frames")
-        frames_title.setStyleSheet(
-            "font-weight:bold; font-size:14px;"
-        )
         layout.addWidget(frames_title)
 
         self.all_frames_cb = QCheckBox(
@@ -178,9 +171,6 @@ class BatchInferenceDialog(QDialog):
         layout.addSpacing(10)
 
         progress_title = QLabel("Progress")
-        progress_title.setStyleSheet(
-            "font-weight:bold; font-size:14px;"
-        )
         layout.addWidget(progress_title)
 
         self.progress_bar = QProgressBar()
