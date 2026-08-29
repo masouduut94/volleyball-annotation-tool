@@ -1,3 +1,28 @@
 *.db
-__pycache__/*
+# video and image files.
+*.mov
+*.mp4
+*.webm
+*.mkv
+*.csv
+*.png
+*.ipynb_checkpoints
 *.pyc
+*.xml
+
+# tensorflow - pytorch model weights
+*.pt
+*.tb
+*.h5
+
+# IDE files
+.idea
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
