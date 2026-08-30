@@ -279,14 +279,20 @@ class MainWindow(QMainWindow):
         self.scene.annotation_changed.emit()
 
     def activate_rectangle(self):
-        self.left_toolbar.rect_btn.setChecked(True)
-        self.left_toolbar.poly_btn.setChecked(False)
+        self.left_toolbar.sync_tool_visuals("rectangle")  # was: set_tool(...)
         self.scene.set_tool(ToolMode.RECTANGLE)
 
     def activate_polygon(self):
-        self.left_toolbar.rect_btn.setChecked(False)
-        self.left_toolbar.poly_btn.setChecked(True)
+        self.left_toolbar.sync_tool_visuals("polygon")  # was: set_tool(...)
         self.scene.set_tool(ToolMode.POLYGON)
+
+    def deactivate_tools(self):
+        self.left_toolbar.clear_tool_selection()
+        self.scene.set_tool(ToolMode.NONE)
+
+    def on_scene_tool_mode_changed(self, mode: str):
+        if mode == ToolMode.NONE:
+            self.left_toolbar.clear_tool_selection()
 
     # ---------------------------------------------------------
     # Image loading
@@ -557,10 +563,13 @@ class MainWindow(QMainWindow):
         self.scene.set_current_label(label_name, color)
 
     def tool_changed(self, tool_name):
+        """Only reached via LeftSideBar.set_tool's emit — i.e. an actual button click."""
         if tool_name == "rectangle":
             self.activate_rectangle()
         elif tool_name == "polygon":
             self.activate_polygon()
+        elif tool_name == "none":
+            self.deactivate_tools()
 
     def clear_current_frame_annotations(self):
         path, media_type, frame = self.current_media_info()

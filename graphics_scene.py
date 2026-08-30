@@ -29,7 +29,7 @@ class ToolMode:
     """
     RECTANGLE = "rectangle"
     POLYGON = "polygon"
-
+    NONE = "none"  # neutral mode:
 
 class AnnotationScene(QGraphicsScene):
     """
@@ -50,6 +50,7 @@ class AnnotationScene(QGraphicsScene):
 
     # Signal emitted when any annotation changes in the scene
     annotation_changed = pyqtSignal()
+    tool_mode_changed = pyqtSignal(str)
 
     def __init__(self, db: DatabaseManager, parent=None):
         """
@@ -194,6 +195,7 @@ class AnnotationScene(QGraphicsScene):
         # Cancel any ongoing polygon drawing when switching tools
         self.cancel_polygon()
         self.tool_mode = mode
+        self.tool_mode_changed.emit(mode)
 
     def set_current_label(self, label: str, color: str):
         """
@@ -352,6 +354,7 @@ class AnnotationScene(QGraphicsScene):
         """
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_polygon()
+            self.set_tool(ToolMode.NONE)
             event.accept()
             return
 

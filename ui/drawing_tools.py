@@ -16,7 +16,7 @@ class BaseAnnotationItem:
     """
 
     # Constant size for handle controls (the small squares used for resizing/editing)
-    HANDLE_SIZE = 8.0
+    HANDLE_SIZE = 4.0
     # Size when hovering over a handle to make it easier to click
     HANDLE_HOVER_SIZE = 12.0
 
@@ -204,18 +204,24 @@ class BaseAnnotationItem:
         """
         self.layer_name = layer_name
 
+    def _view_scale(self) -> float:
+        """
+        Current zoom factor of the view showing this item, so on-screen
+        elements (handles, vertex dots) can be kept at a constant pixel
+        size no matter how far the user has zoomed in.
+        """
+        scene = self.scene()
+        if scene is not None:
+            views = scene.views()
+            if views:
+                t = views[0].transform()
+                det = t.m11() * t.m22() - t.m12() * t.m21()
+                if det > 0:
+                    return det ** 0.5
+        return 1.0
+
     def _handle_rect(self, center: QPointF) -> QRectF:
-        """
-        Create a rectangle for a handle at a specific center point.
-        Handles are the small squares used for resizing/editing.
-
-        Args:
-            center: Center point of the handle
-
-        Returns:
-            QRectF: Rectangle representing the handle area
-        """
-        s = self.HANDLE_SIZE
+        s = self.HANDLE_SIZE / self._view_scale()
         return QRectF(center.x() - s / 2, center.y() - s / 2, s, s)
 
     def _draw_handle(self, painter, center: QPointF, active=False):
@@ -783,8 +789,10 @@ class AnnotationPolygonItem(QGraphicsPolygonItem, BaseAnnotationItem):
         # Draw small circles at each vertex for visibility
         painter.setBrush(QBrush(self.annotation_color))
         painter.setPen(QPen(Qt.GlobalColor.white, 1))
+
+        dot_r = 2 / self._view_scale()
         for point in self.polygon():
-            painter.drawEllipse(point, 2, 2)
+            painter.drawEllipse(point, dot_r, dot_r)
 
         # Draw resize handles at each vertex if selected
         if self.isSelected():

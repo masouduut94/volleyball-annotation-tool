@@ -105,7 +105,6 @@ class LeftSideBar(QWidget):
         layout.addWidget(title)
 
         layout.addWidget(self.separator())
-
         layout.addWidget(self.section("Layers"))
 
         for layer in ["court", "players", "ball", "actions"]:
@@ -117,7 +116,6 @@ class LeftSideBar(QWidget):
             layout.addWidget(row)
 
         layout.addWidget(self.separator())
-
         layout.addWidget(self.section("Labels"))
 
         self.labels_container = QWidget()
@@ -153,8 +151,18 @@ class LeftSideBar(QWidget):
         self.poly_btn.setToolTip("Polygon Tool")
         self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
 
+        self.none_btn = QPushButton()
+        self.none_btn.setIcon(QIcon("./resources/icons/tools/cursor.png"))
+        self.none_btn.setFixedSize(btn_size, btn_size)
+        self.none_btn.setIconSize(QSize(icon_size, icon_size))
+        self.none_btn.setFont(QFont("Arial", 14))
+        self.none_btn.setToolTip("Selection Tool (Esc)")
+        self.none_btn.clicked.connect(lambda: self.set_tool("none"))
+
+
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)
+        tools.addWidget(self.none_btn)
         tools.addStretch()
         layout.addLayout(tools)
         layout.addWidget(self.separator())
@@ -250,22 +258,42 @@ class LeftSideBar(QWidget):
         self.labelChanged.emit(label)
 
     def set_tool(self, tool):
-        """
-        Set the active annotation tool and update the UI accordingly.
-
-        Args:
-            tool (str): Tool name ('rectangle' or 'polygon')
-        """
-        self.current_tool = tool
-
-        self.rect_btn.setObjectName("toolActive" if tool == "rectangle" else "tool")
-        self.poly_btn.setObjectName("toolActive" if tool == "polygon" else "tool")
+        """User-initiated tool selection (from clicking a tool button). Emits toolChanged."""
+        self._apply_tool_visuals(tool)
+        self.toolChanged.emit(tool)
 
         for btn in [self.rect_btn, self.poly_btn]:
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
         self.toolChanged.emit(tool)
+
+    def clear_tool_selection(self):
+        """
+        Visually deselect both tool buttons (neutral cursor mode).
+        Does not emit toolChanged — this is meant to be called in *response*
+        to a mode change (e.g. Escape), not to trigger one.
+        """
+        self._apply_tool_visuals("none")
+
+    def sync_tool_visuals(self, tool):
+        """
+        Reflect the active tool in the UI without emitting toolChanged.
+        Used when MainWindow is the source of truth (e.g. syncing after the
+        scene's tool mode changed) and calling set_tool would loop back here.
+        """
+        self._apply_tool_visuals(tool)
+
+    def _apply_tool_visuals(self, tool):
+        self.current_tool = tool
+
+        self.rect_btn.setObjectName("toolActive" if tool == "rectangle" else "tool")
+        self.poly_btn.setObjectName("toolActive" if tool == "polygon" else "tool")
+        self.none_btn.setObjectName("toolActive" if tool == "none" else "tool")
+
+        for btn in [self.rect_btn, self.poly_btn, self.none_btn]:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
 
 class LayerRow(QWidget):
@@ -372,4 +400,3 @@ class LabelRow(QPushButton):
         super().__init__()
         self.label_name = name
         self.setText(f"●  {name}")
-
