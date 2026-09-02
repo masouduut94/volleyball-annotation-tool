@@ -61,18 +61,26 @@ class MainWindow(QMainWindow):
 
         self._create_ui()
 
+        # Bottom toolbar
         QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
         QShortcut(QKeySequence("D"), self, activated=self.next_frame)
         QShortcut(QKeySequence("Q"), self, activated=self.previous_15_frame)
         QShortcut(QKeySequence("E"), self, activated=self.next_15_frame)
+
+        # Top toolbar
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
         QShortcut(QKeySequence("Shift+Delete"), self, activated=self.clear_current_frame_annotations)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=self.open_batch_inference)
+
         # Redo/Undo
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.confirm_current_frame)
-        QShortcut(QKeySequence("Esc"), self, activated=self.reset_left_toolbar_tool)
+
+        # Left Toolbar
+        QShortcut(QKeySequence("Esc"), self, activated=self.set_tool_to_none)
+        QShortcut(QKeySequence("P"), self, activated=self.activate_polygon)
+        QShortcut(QKeySequence("R"), self, activated=self.activate_rectangle)
 
     # ---------------------------------------------------------
     # UI
@@ -572,7 +580,7 @@ class MainWindow(QMainWindow):
         elif tool_name == "none":
             self.deactivate_tools()
 
-    def reset_left_toolbar_tool(self):
+    def set_tool_to_none(self):
         self.left_toolbar.set_tool("none")
         self.scene.cancel_polygon()
         self.scene.set_tool(ToolMode.NONE)
