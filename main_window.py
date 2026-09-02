@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.confirm_current_frame)
+        QShortcut(QKeySequence("Esc"), self, activated=self.reset_left_toolbar_tool)
 
     # ---------------------------------------------------------
     # UI
@@ -570,6 +571,11 @@ class MainWindow(QMainWindow):
             self.activate_polygon()
         elif tool_name == "none":
             self.deactivate_tools()
+
+    def reset_left_toolbar_tool(self):
+        self.left_toolbar.set_tool("none")
+        self.scene.cancel_polygon()
+        self.scene.set_tool(ToolMode.NONE)
 
     def clear_current_frame_annotations(self):
         path, media_type, frame = self.current_media_info()

@@ -262,7 +262,7 @@ class LeftSideBar(QWidget):
         self._apply_tool_visuals(tool)
         self.toolChanged.emit(tool)
 
-        for btn in [self.rect_btn, self.poly_btn]:
+        for btn in [self.rect_btn, self.poly_btn, self.none_btn]:
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
