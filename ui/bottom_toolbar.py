@@ -2,15 +2,8 @@
 
 from PyQt6.QtCore import pyqtSignal, QSize, Qt, QPoint
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QPushButton,
-    QSpinBox,
-    QLabel,
-    QSlider,
-    QToolTip, QStyleOptionSlider
-)
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QSpinBox, QLabel, QSlider,
+                             QToolTip, QStyleOptionSlider)
 
 
 class FrameSlider(QSlider):
@@ -90,6 +83,7 @@ class FrameSlider(QSlider):
     def leaveEvent(self, event):
         self.frame_label.hide()
         super().leaveEvent(event)
+
 
 class BottomToolbar(QWidget):
     """
@@ -256,14 +250,9 @@ class BottomToolbar(QWidget):
         """Create a styled navigation button."""
 
         btn = QPushButton(text)
-
         btn.setToolTip(tooltip)
-
         btn.setIcon(QIcon(icon_path))
-        btn.setIconSize(
-            QSize(icon_size, icon_size)
-        )
-
+        btn.setIconSize(QSize(icon_size, icon_size))
         btn.clicked.connect(callback)
 
         return btn

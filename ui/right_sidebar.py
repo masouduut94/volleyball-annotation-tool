@@ -233,17 +233,6 @@ class RightSidebar(QWidget):
         self.configure_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.configure_button.clicked.connect(self.configureJobRequested.emit)
         main_layout.addWidget(self.configure_button)
-
-        # -----------------------------------------------------
-        # Settings
-        # -----------------------------------------------------
-
-        self.settings_button = QPushButton("Configurations")
-        self.settings_button.setIcon(QIcon("./resources/icons/right_sidebar/settings.png"))
-        self.settings_button.setFixedHeight(38)
-        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_button.clicked.connect(self.settingsRequested.emit)
-        main_layout.addWidget(self.settings_button)
         # Push everything to the top
         main_layout.addStretch()
 

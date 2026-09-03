@@ -140,7 +140,7 @@ class LeftSideBar(QWidget):
         self.rect_btn.setFixedSize(btn_size, btn_size)
         self.rect_btn.setIconSize(QSize(icon_size, icon_size))
         self.rect_btn.setFont(QFont("Arial", 14))
-        self.rect_btn.setToolTip("Rectangle Tool")
+        self.rect_btn.setToolTip("Rectangle Tool (R)")
         self.rect_btn.clicked.connect(lambda: self.set_tool("rectangle"))
 
         self.poly_btn = QPushButton()
@@ -148,7 +148,7 @@ class LeftSideBar(QWidget):
         self.poly_btn.setFixedSize(btn_size, btn_size)
         self.poly_btn.setIconSize(QSize(icon_size, icon_size))
         self.poly_btn.setFont(QFont("Arial", 14))
-        self.poly_btn.setToolTip("Polygon Tool")
+        self.poly_btn.setToolTip("Polygon Tool (P)")
         self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
 
         self.none_btn = QPushButton()
