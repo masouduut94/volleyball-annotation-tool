@@ -17,6 +17,8 @@ from config_dialog import ConfigDialog
 from services.auto_annotator import AutoAnnotator
 from services.yolo_export_worker import YOLOExportWorker
 from services.batch_inference import BatchInferenceDialog
+from services.game_state_classifier import GameStateClassifier
+from services.game_state_worker import GameStateWorker
 
 from ui.utils import information_box
 from ui.top_toolbar import TopToolbar
@@ -26,6 +28,7 @@ from ui.bottom_toolbar import BottomToolbar
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.export_progress_dialog import ExportProgressDialog
 from ui.confirmation_bar import ConfirmationBar
+from ui.game_state_dialog import GameStateRangeDialog
 
 
 class MainWindow(QMainWindow):
@@ -37,7 +40,12 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self.db = DatabaseManager(db_path=db_path)
+        # Auto-Annotators (YOLO + VideoMAE)
         self.auto_annotator = AutoAnnotator(self.db)
+        self.game_state_classifier = GameStateClassifier()
+        gs_path = self.db.get_model_path("game_state")
+        if gs_path:
+            self.game_state_classifier.ensure_loaded(gs_path)
 
         self.image_paths = []
         self.current_index = 0
@@ -58,6 +66,9 @@ class MainWindow(QMainWindow):
             "ball": True,
             "actions": True,
         }
+
+        self._tag_pending_start = None
+        self._tag_pending_state = None
 
         self._create_ui()
 
@@ -164,15 +175,17 @@ class MainWindow(QMainWindow):
         self.right_sidebar.configureJobRequested.connect(self.open_batch_inference)
         self.right_sidebar.settingsRequested.connect(self.open_config)
         self.right_sidebar.setPathRequested.connect(self.set_model_path)
+        self.right_sidebar.gameStateDetectRequested.connect(self.open_game_state_dialog)
+
+        # Image Tagging
+        self.right_sidebar.tagMarkStartRequested.connect(self.tag_mark_start)
+        self.right_sidebar.tagMarkEndRequested.connect(self.tag_mark_end)
+        self.right_sidebar.tagCancelRequested.connect(self.tag_cancel)
+        # in _create_right_sidebar, alongside the other tag connects:
+        self.right_sidebar.tagEditApplyRequested.connect(self.tag_edit_apply)
+        self.right_sidebar.tagEditDeleteRequested.connect(self.tag_edit_delete)
 
         return self.right_sidebar
-
-    def get_ai_model_status(self):
-        return {
-            "ball": self.auto_annotator.is_configured("ball"),
-            "players": self.auto_annotator.is_configured("players"),
-            "actions": self.auto_annotator.is_configured("actions"),
-        }
 
     def open_config(self):
         dialog = ConfigDialog(self.db, self)
@@ -325,6 +338,7 @@ class MainWindow(QMainWindow):
         self.current_index = 0
 
         self.bottom_toolbar.set_frame_range(len(files) - 1)
+        self.right_sidebar.set_tag_max_frame(len(files) - 1)
 
         self.load_current_image()
 
@@ -360,6 +374,7 @@ class MainWindow(QMainWindow):
 
         self.load_annotations()
         self.refresh_frame_confirmation_indicator()
+        self.refresh_tag_editing_state()
 
     def get_frame_by_number(self, frame_number: int) -> Optional[np.ndarray]:
         if self.cap is None:
@@ -402,6 +417,7 @@ class MainWindow(QMainWindow):
         )
 
         self.bottom_toolbar.set_frame_range(self.total_frames - 1)
+        self.right_sidebar.set_tag_max_frame(self.total_frames - 1)
 
         self.goto_frame(0)
 
@@ -436,6 +452,7 @@ class MainWindow(QMainWindow):
         # Update bottom toolbar
         self.bottom_toolbar.set_current_frame(frame_number)
         self.refresh_frame_confirmation_indicator()
+        self.refresh_tag_editing_state()
 
     # ---------------------------------------------------------
     # Navigation
@@ -753,6 +770,10 @@ class MainWindow(QMainWindow):
                 imported += 1
         return annotations, imported
 
+    # ------------------------------------------
+    # YOLO worker methods
+    # ------------------------------------------
+
     def export_yolo(self):
 
         dialog = YOLOExportDialog(self.db, self)
@@ -826,18 +847,232 @@ class MainWindow(QMainWindow):
             f"Could not export YOLO dataset:\n\n{message}",
         )
 
+    # ------------------------------------------
+    # VideoMAE Worker methods
+    # ------------------------------------------
+
+    def open_game_state_dialog(self):
+        if self.video_path is None:
+            QMessageBox.warning(
+                self, "No video loaded",
+                "Game-state classification needs a loaded video (it's not meaningful on a loose image set).",
+            )
+            return
+
+        if not self.game_state_classifier.is_configured():
+            QMessageBox.warning(self, "Model Not Configured", "Please set the Game State model path first.")
+            self.set_model_path("game_state")
+            if not self.game_state_classifier.is_configured():
+                return
+
+        dialog = GameStateRangeDialog(
+            max_frame=self.total_frames - 1,
+            current_frame=self.bottom_toolbar.get_current_frame(),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        settings = dialog.get_settings()
+
+        self.game_state_progress_dialog = ExportProgressDialog(
+            self,
+            window_title="Classifying Game State",
+            preparing_text=(
+                f"Preparing classification for frames "
+                f"{settings['start_frame']}–{settings['end_frame']}..."
+            ),
+            progress_verb="Classifying",
+            finished_text="Classification completed.",
+            cancelled_text="Classification cancelled.",
+            error_text="Classification failed.",
+        )
+
+        self.game_state_thread = QThread(self)
+        self.game_state_worker = GameStateWorker(
+            db=self.db,
+            classifier=self.game_state_classifier,
+            video_path=self.video_path,
+            media_type="video",
+            width=self.original_width,
+            height=self.original_height,
+            start_frame=settings["start_frame"],
+            end_frame=settings["end_frame"],
+            window_size=settings["window_size"],
+        )
+        self.game_state_worker.moveToThread(self.game_state_thread)
+
+        self.game_state_thread.started.connect(self.game_state_worker.run)
+        self.game_state_worker.progress.connect(
+            lambda done, total: self.game_state_progress_dialog.set_progress(
+                int(done / max(total, 1) * 100), detail=f"window {done}/{total}"
+            )
+        )
+        self.game_state_progress_dialog.cancel_button.clicked.connect(self.game_state_worker.cancel)
+        self.game_state_worker.finished.connect(self._game_state_finished)
+        self.game_state_worker.cancelled.connect(self._game_state_cancelled)
+        self.game_state_worker.error.connect(self._game_state_error)
+
+        self.game_state_worker.finished.connect(self.game_state_thread.quit)
+        self.game_state_worker.cancelled.connect(self.game_state_thread.quit)
+        self.game_state_worker.error.connect(self.game_state_thread.quit)
+        self.game_state_thread.finished.connect(self.game_state_worker.deleteLater)
+        self.game_state_thread.finished.connect(self.game_state_thread.deleteLater)
+
+        self.game_state_progress_dialog.show()
+        self.game_state_thread.start()
+
+    def _game_state_finished(self, count):
+        self.game_state_progress_dialog.set_finished()
+        self.game_state_progress_dialog.close()
+        self.load_game_state_segments()
+        information_box(self, message=f"✅ Classified {count} window(s).")
+
+    def _game_state_cancelled(self):
+        self.game_state_progress_dialog.set_cancelled()
+        self.game_state_progress_dialog.close()
+
+    def _game_state_error(self, message):
+        self.game_state_progress_dialog.close()
+        QMessageBox.critical(self, "Classification Failed", f"Could not classify game state:\n\n{message}")
+
+    def load_game_state_segments(self):
+        if self.video_path is None:
+            self.bottom_toolbar.set_game_state_segments([])
+            return
+        segments = self.db.get_game_state_segments(self.video_path)
+        self.bottom_toolbar.set_game_state_segments(
+            [(s.start_frame, s.end_frame, s.state, s.source) for s in segments]
+        )
+
     def get_ai_model_paths(self):
         return {
             "ball": self.db.get_model_path("ball"),
             "players": self.db.get_model_path("players"),
             "actions": self.db.get_model_path("actions"),
+            "game_state": self.db.get_model_path("game_state"),
+        }
+
+    def get_ai_model_status(self):
+        return {
+            "ball": self.auto_annotator.is_configured("ball"),
+            "players": self.auto_annotator.is_configured("players"),
+            "actions": self.auto_annotator.is_configured("actions"),
+            "game_state": self.game_state_classifier.is_configured(),
         }
 
     def set_model_path(self, model_key):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Select {model_key} model", "", "Model files (*.pt *.onnx);;All Files (*)",
-        )
-        if not path:
-            return
+        if model_key == "game_state":
+            # Use folder dialog for game_state
+            folder_path = QFileDialog.getExistingDirectory(
+                self,
+                caption=f"Select {model_key} model folder",
+                directory=""
+            )
+            if not folder_path:
+                return
+
+            path = folder_path
+        else:
+            # Use file dialog for other models
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                caption=f"Select {model_key} model",
+                directory="",
+                filter="Model files (*.pt *.onnx);;All Files (*)"
+            )
+            if not path:
+                return
+
         self.db.set_model_path(model_key, path)
+        if model_key == "game_state":
+            self.game_state_classifier.ensure_loaded(path)
         self.refresh_ai_sidebar()
+
+    def tag_mark_start(self, state):
+        if self.video_path is None:
+            QMessageBox.warning(self, "No video loaded", "Tagging needs a loaded video.")
+            return
+        self._tag_pending_start = self.bottom_toolbar.get_current_frame()
+        self._tag_pending_state = state
+        self.right_sidebar.set_tag_pending(True, self._tag_pending_start, state)
+        self.bottom_toolbar.set_pending_tag_marker(self._tag_pending_start, state)
+
+    def tag_mark_end(self):
+        if self._tag_pending_start is None:
+            return
+
+        end_frame = self.bottom_toolbar.get_current_frame()
+        start_frame, end_frame = sorted((self._tag_pending_start, end_frame))
+
+        self.db.save_manual_game_state_segment(
+            media_path=self.video_path,
+            media_type="video",
+            width=self.original_width,
+            height=self.original_height,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            state=self._tag_pending_state,
+        )
+
+        self._tag_pending_start = None
+        self._tag_pending_state = None
+        self.right_sidebar.set_tag_pending(False)
+        self.bottom_toolbar.set_pending_tag_marker(None, None)
+        self.load_game_state_segments()
+        self.refresh_tag_editing_state()
+
+    def tag_cancel(self):
+        self._tag_pending_start = None
+        self._tag_pending_state = None
+        self.right_sidebar.set_tag_pending(False)
+        self.bottom_toolbar.set_pending_tag_marker(None, None)
+        self.refresh_tag_editing_state()
+
+    def refresh_tag_editing_state(self):
+        """
+        Called after every frame navigation. Looks up whether the current
+        frame sits inside an existing segment and updates the sidebar's
+        Tag panel accordingly. A pending create always wins — we don't want
+        the edit panel popping up mid-way through marking a new tag.
+        """
+        if self.video_path is None:
+            self.right_sidebar.set_tag_editing(None)
+            return
+
+        frame = self.bottom_toolbar.get_current_frame()
+        self.right_sidebar.set_tag_current_frame(frame)
+
+        if self._tag_pending_start is not None:
+            return  # mid-create; leave the create panel showing
+
+        segment = self.db.get_segment_at_frame(self.video_path, frame)
+        self._tag_editing_segment = segment
+        self.right_sidebar.set_tag_editing(segment)
+
+    def tag_edit_apply(self, start_frame, end_frame, state):
+        if self._tag_editing_segment is None:
+            return
+
+        error = self.db.update_game_state_segment(
+            segment_id=self._tag_editing_segment.segment_id,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            state=state,
+        )
+
+        if error:
+            QMessageBox.warning(self, "Could Not Update Tag", error)
+            return
+
+        self.load_game_state_segments()
+        self.refresh_tag_editing_state()
+
+    def tag_edit_delete(self):
+        if self._tag_editing_segment is None:
+            return
+
+        self.db.delete_game_state_segment(self._tag_editing_segment.segment_id)
+        self._tag_editing_segment = None
+        self.right_sidebar.set_tag_editing(None)
+        self.load_game_state_segments()

@@ -822,3 +822,10 @@ GitHub:
 
 https://github.com/masouduut94/volleyball-annotation-tool
 
+Icons from:
+<a href="https://www.flaticon.com/free-icons/action" title="action icons">Action icons created by Magnific - Flaticon</a>
+<a href="https://www.flaticon.com/free-icons/volleyball" title="volleyball icons">Volleyball icons created by Leremy - Flaticon</a>
+<a href="https://www.flaticon.com/free-icons/clapperboard" title="clapperboard icons">Clapperboard icons created by SumberRejeki - Flaticon</a>
+
+
+

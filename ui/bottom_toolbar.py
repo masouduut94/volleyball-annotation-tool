@@ -1,19 +1,34 @@
 # ui/bottom_toolbar.py
 
-from PyQt6.QtCore import pyqtSignal, QSize, Qt, QPoint
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import pyqtSignal, QSize, Qt, QPoint, QRectF, QPointF
+from PyQt6.QtGui import QIcon, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QSpinBox, QLabel, QSlider,
                              QToolTip, QStyleOptionSlider)
+
+STATE_COLORS = {
+    "play": "#3DDC84",
+    "no-play": "#555A66",
+    "service": "#FF7A29",
+    "unknown": "#3A3D46",
+}
 
 
 class FrameSlider(QSlider):
     """
     QSlider that displays the current frame number
-    directly above the slider handle.
+    directly above the slider handle with color coding.
     """
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
+
+        # Initialize these FIRST — paintEvent can fire before the rest of
+        # __init__ runs (e.g. as soon as the widget is added to a layout),
+        # so anything paintEvent touches must exist before that can happen.
+        self.segments = []  # list of (start_frame, end_frame, state, source)
+        self._pending_marker = None  # (frame, state) or None
+        self._drag_started = False
+        self._label_color = "#FFFFFF"
 
         self.setMouseTracking(True)
 
@@ -22,12 +37,47 @@ class FrameSlider(QSlider):
         self.frame_label.hide()
         self.frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Set up label styling
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        self.frame_label.setFont(font)
+        self.frame_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 180);
+                border: 2px solid white;
+                border-radius: 12px;
+                color: white;
+                padding: 2px;
+            }
+        """)
+
         self.valueChanged.connect(self._on_value_changed)
 
     def _on_value_changed(self, value):
         self._update_label_position()
+        self._update_label_color(value)
         self.frame_label.setText(f"{value}")
         self.frame_label.show()
+
+    def _update_label_color(self, value):
+        """Update label color based on current frame position in segments."""
+        color = "#FFFFFF"
+        for start, end, state, source in self.segments:  # was: start, end, state
+            if start <= value <= end:
+                color = STATE_COLORS.get(state, "#FFFFFF")
+                break
+
+        self._label_color = color
+        self.frame_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: rgba(0, 0, 0, 180);
+                border: 2px solid {color};
+                border-radius: 12px;
+                color: {color};
+                padding: 2px;
+            }}
+        """)
 
     def _update_label_position(self):
         """Position the label above the slider handle."""
@@ -51,7 +101,7 @@ class FrameSlider(QSlider):
 
         # Position label above the handle
         label_width = 80
-        label_height = 25
+        label_height = 30
 
         x = handle_rect.center().x() - label_width // 2
         y = handle_rect.top() - label_height - 5  # 5px gap above handle
@@ -62,27 +112,217 @@ class FrameSlider(QSlider):
 
         self.frame_label.setGeometry(x, y, label_width, label_height)
 
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        self._update_label_position()
-        self.frame_label.setText(f"{self.value()}")
-        self.frame_label.show()
+    def set_segments(self, segments):
+        """segments: list of (start_frame, end_frame, state) tuples."""
+        self.segments = segments or []
+        self.update()
 
-    def mouseMoveEvent(self, event):
-        super().mouseMoveEvent(event)
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            self._update_label_position()
-            self.frame_label.setText(f"{self.value()}")
+    def set_pending_marker(self, frame, state):
+        self._pending_marker = (frame, state) if frame is not None else None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        segments = getattr(self, "segments", [])
+        pending_marker = getattr(self, "_pending_marker", None)
+
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+
+        groove_rect = style.subControlRect(
+            style.ComplexControl.CC_Slider,
+            opt,
+            style.SubControl.SC_SliderGroove,
+            self
+        )
+        track_rect = QRectF(
+            groove_rect.left(),
+            groove_rect.center().y() - 4,
+            groove_rect.width(),
+            8
+        )
+
+        # Base (unclassified) track
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(STATE_COLORS["unknown"]))
+        painter.drawRoundedRect(track_rect, 4, 4)
+
+        span = max(1, self.maximum() - self.minimum())
+
+        def frame_to_x(frame):
+            ratio = (frame - self.minimum()) / span
+            return track_rect.left() + ratio * track_rect.width()
+
+        # Classified windows
+        for start, end, state, source in segments:  # was: start, end, state
+            x1 = frame_to_x(start)
+            x2 = frame_to_x(end + 1)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(STATE_COLORS.get(state, STATE_COLORS["unknown"])))
+            rect = QRectF(x1, track_rect.top(), max(2.0, x2 - x1), track_rect.height())
+            painter.drawRoundedRect(rect, 2, 2)
+
+            if source == "manual":
+                # Outline confirmed ground-truth tags so they read as distinct
+                # from AI-generated guesses.
+                painter.setPen(QPen(QColor("#FFFFFF"), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(rect, 2, 2)
+
+            if state == "service":
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#FFD814"))
+                painter.drawRect(QRectF(x1, track_rect.top() - 3, 2, track_rect.height() + 6))
+
+        # Pending tag marker — dashed line at the marked start frame, since
+        # nothing is committed until the end frame is also marked.
+        if pending_marker is not None:
+            p_frame, p_state = pending_marker
+            x = frame_to_x(p_frame)
+            pen = QPen(QColor(STATE_COLORS.get(p_state, "#FFFFFF")), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x, track_rect.top() - 6), QPointF(x, track_rect.bottom() + 6))
+            painter.setPen(Qt.PenStyle.NoPen)
+
+        # Handle
+        handle_rect = style.subControlRect(
+            style.ComplexControl.CC_Slider,
+            opt,
+            style.SubControl.SC_SliderHandle,
+            self
+        )
+
+        current_value = self.value()
+        handle_color = "#FFFFFF"
+        for start, end, state, source in self.segments:  # was: start, end, state
+            if start <= current_value <= end:
+                handle_color = STATE_COLORS.get(state, "#FFFFFF")
+                break
+
+        painter.setBrush(QColor(handle_color))
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawEllipse(handle_rect.center(), 7, 7)
+
+    def _get_frame_from_pos(self, pos):
+        """Calculate frame number from mouse click position."""
+        if self.maximum() <= self.minimum():
+            return self.minimum()
+
+        # Get the groove rectangle
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+
+        groove_rect = style.subControlRect(
+            style.ComplexControl.CC_Slider,
+            opt,
+            style.SubControl.SC_SliderGroove,
+            self
+        )
+
+        # Calculate position within the groove
+        x = pos.x()
+        groove_left = groove_rect.left()
+        groove_right = groove_rect.right()
+        groove_width = groove_right - groove_left
+
+        # Clamp to groove bounds
+        x = max(groove_left, min(groove_right, x))
+
+        # Calculate ratio and corresponding frame
+        ratio = (x - groove_left) / max(1, groove_width)
+        frame = self.minimum() + round(ratio * (self.maximum() - self.minimum()))
+
+        return max(self.minimum(), min(self.maximum(), frame))
+
+    def mousePressEvent(self, event):
+        """Handle mouse press to jump to click position."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_started = True
+
+            # Calculate frame from click position
+            frame = self._get_frame_from_pos(event.position().toPoint())
+
+            # Position label at click point instead of above handle
+            label_width = 80
+            label_height = 30
+
+            click_x = event.position().x() - label_width // 2
+            click_y = 10  # Fixed position near top
+
+            # Ensure label stays within widget bounds
+            click_x = max(0, int(min(click_x, self.width() - label_width)))
+            self.frame_label.setGeometry(click_x, click_y, label_width, label_height)
+
+            # Update the slider value
+            self.blockSignals(True)
+            self.setValue(frame)
+            self.blockSignals(False)
+
+            self._update_label_color(frame)
+            self.frame_label.setText(f"{frame}")
             self.frame_label.show()
 
+            # Emit the value changed signal manually
+            self.valueChanged.emit(frame)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Update label position when dragging."""
+        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_started:
+            current_value = self.value()
+            self._update_label_color(current_value)
+            self.frame_label.setText(f"{current_value}")
+            self.frame_label.show()
+
+            # Update handle position during drag
+            frame = self._get_frame_from_pos(event.position().toPoint())
+            self.blockSignals(True)
+            self.setValue(frame)
+            self.blockSignals(False)
+            self.valueChanged.emit(frame)
+        else:
+            super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
+        """Keep label visible after release."""
         super().mouseReleaseEvent(event)
-        # Keep showing for a moment, then hide after a delay
-        self.frame_label.show()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_started = False
+
+            # Final update to ensure label is at correct position
+            current_value = self.value()
+            self._update_label_position()
+            self._update_label_color(current_value)
+            self.frame_label.setText(f"{current_value}")
+            self.frame_label.show()
 
     def leaveEvent(self, event):
         self.frame_label.hide()
+        self._drag_started = False
         super().leaveEvent(event)
+
+    def enterEvent(self, event):
+        """Show label when mouse enters the widget."""
+        super().enterEvent(event)
+        current_value = self.value()
+        self._update_label_color(current_value)
+        self.frame_label.setText(f"{current_value}")
+        self._update_label_position()
+        self.frame_label.show()
+
+    def wheelEvent(self, event):
+        """Handle mouse wheel scrolling."""
+        super().wheelEvent(event)
+        current_value = self.value()
+        self._update_label_color(current_value)
+        self.frame_label.setText(f"{current_value}")
+        self._update_label_position()
+        self.frame_label.show()
 
 
 class BottomToolbar(QWidget):
@@ -103,8 +343,8 @@ class BottomToolbar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self.main_window = parent
+        self._pending_marker = None  # (frame, state) or None
 
         self._setup_ui()
 
@@ -173,9 +413,7 @@ class BottomToolbar(QWidget):
         self.frame_slider.setMinimumHeight(50)
 
         # Update frame when slider is moved
-        self.frame_slider.valueChanged.connect(
-            self._on_slider_changed
-        )
+        self.frame_slider.valueChanged.connect(self._on_slider_changed)
 
         # ---------------------------------------------------------
         # Separator
@@ -239,14 +477,16 @@ class BottomToolbar(QWidget):
 
         layout.addStretch(1)
 
+    def set_game_state_segments(self, segments):
+        """segments: list of (start_frame, end_frame, state, source) tuples."""
+        self.frame_slider.set_segments(segments)
+
+    def set_pending_tag_marker(self, frame, state):
+        self.frame_slider.set_pending_marker(frame, state)
+
     @staticmethod
-    def _create_navigation_button(
-            text: str,
-            tooltip: str,
-            icon_path: str,
-            callback,
-            icon_size=25,
-    ):
+    def _create_navigation_button(text: str, tooltip: str, icon_path: str, callback,
+                                  icon_size=25, ):
         """Create a styled navigation button."""
 
         btn = QPushButton(text)
@@ -356,6 +596,9 @@ class BottomToolbar(QWidget):
 
         self.frame_slider.blockSignals(False)
         self.frame_spin.blockSignals(False)
+
+        # Update the label color
+        self.frame_slider._update_label_color(frame_number)
 
     def get_current_frame(self):
         """Return current frame number."""

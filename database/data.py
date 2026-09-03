@@ -32,3 +32,15 @@ class Annotation:
     annotation_id: Optional[int] = None  # Optional ID for reference
     is_ai_generated: bool = False  # NEW
     confirmed: bool = True  # NEW — human-drawn defaults to confirmed
+
+
+@dataclass_json
+@dataclass
+class GameStateSegment:
+    media_name: str
+    start_frame: int
+    end_frame: int
+    state: str
+    confidence: float = 0.0
+    source: str = "model"          # NEW
+    segment_id: Optional[int] = None

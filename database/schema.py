@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy.orm import declarative_base, relationship
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint, Boolean
+from sqlalchemy import (Column, Integer, String, DateTime, ForeignKey, Text,
+                        UniqueConstraint, Boolean, Float)
 
 Base = declarative_base()
 
@@ -177,3 +178,27 @@ class ModelConfig(Base):
     key = Column(String(50), primary_key=True)
 
     path = Column(Text)
+
+
+# ------------------------------------------------------------------
+# AI Video Game Status Classifier
+# ------------------------------------------------------------------
+
+
+class GameStateSegment(Base):
+    __tablename__ = "game_state_segments"
+
+    id = Column(Integer, primary_key=True)
+    media_id = Column(Integer, ForeignKey("media.id"), nullable=False)
+    start_frame = Column(Integer, nullable=False)
+    end_frame = Column(Integer, nullable=False)
+    state = Column(String(20), nullable=False)
+    confidence = Column(Float, nullable=False, default=0.0)
+    source = Column(String(10), nullable=False, default="model")   # NEW: "model" | "manual"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    media = relationship("Media", backref="game_state_segments")
+
+    __table_args__ = (
+        UniqueConstraint("media_id", "start_frame", "end_frame", name="uq_game_state_segment"),
+    )

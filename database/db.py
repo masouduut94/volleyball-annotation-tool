@@ -13,8 +13,9 @@ from .schema import (
     FrameReview,
     Annotation as SQLAAnnotation,
     Layer as SQLALayer,
+    GameStateSegment as SQLAGameStateSegment
 )
-from .data import Label, Layer, Annotation
+from .data import Label, Layer, Annotation, GameStateSegment
 
 
 def annotation_key(ann: Annotation):
@@ -513,7 +514,8 @@ class DatabaseManager:
             )
             return bool(review and review.confirmed)
 
-    def _reset_frame_review(self, session, media_id, layer_id, frame_number):
+    @staticmethod
+    def _reset_frame_review(session, media_id, layer_id, frame_number):
         review = (
             session.query(FrameReview)
             .filter(
@@ -528,7 +530,7 @@ class DatabaseManager:
             session.commit()
 
     def insert_annotation(self, media_path, media_type, width, height,
-                           layer: Layer, frame_number, annotation: Annotation) -> int:
+                          layer: Layer, frame_number, annotation: Annotation) -> int:
         """
         Insert exactly one annotation row and return its id, preserving
         is_ai_generated/confirmed. Used by DeleteAnnotationCommand.undo()
@@ -597,4 +599,157 @@ class DatabaseManager:
             else:
                 config.path = path
 
+            session.commit()
+
+    def save_game_state_segments(
+            self, media_path, media_type, width, height,
+            start_frame, end_frame, segments,
+    ):
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                media = Media(path=media_path, media_type=media_type, width=width, height=height)
+                session.add(media)
+                session.commit()
+                session.refresh(media)
+
+            session.query(SQLAGameStateSegment).filter(
+                SQLAGameStateSegment.media_id == media.id,
+                SQLAGameStateSegment.start_frame >= start_frame,
+                SQLAGameStateSegment.end_frame <= end_frame,
+            ).delete(synchronize_session=False)
+
+            for seg in segments:
+                session.add(SQLAGameStateSegment(
+                    media_id=media.id,
+                    start_frame=seg.start_frame,
+                    end_frame=seg.end_frame,
+                    state=seg.state,
+                    confidence=seg.confidence,
+                    source=getattr(seg, "source", "model"),  # NEW
+                ))
+
+            session.commit()
+
+    def save_manual_game_state_segment(
+            self, media_path: str, media_type: str, width: int, height: int,
+            start_frame: int, end_frame: int, state: str,
+    ):
+        """
+        Persist one human-tagged ground-truth segment. Reuses the same
+        replace-in-range logic as the AI job, so a manual tag cleanly
+        overwrites whatever the classifier (or an earlier tag) put there —
+        nothing is written until both a start and an end frame exist.
+        """
+        segment = GameStateSegment(
+            media_name=media_path,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            state=state,
+            confidence=1.0,
+            source="manual",
+        )
+        self.save_game_state_segments(
+            media_path=media_path, media_type=media_type, width=width, height=height,
+            start_frame=start_frame, end_frame=end_frame, segments=[segment],
+        )
+
+    def get_game_state_segments(self, media_path: str) -> List[GameStateSegment]:
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return []
+
+            records = (
+                session.query(SQLAGameStateSegment)
+                .filter(SQLAGameStateSegment.media_id == media.id)
+                .order_by(SQLAGameStateSegment.start_frame)
+                .all()
+            )
+
+            return [
+                GameStateSegment(
+                    segment_id=r.id, media_name=media_path,
+                    start_frame=r.start_frame, end_frame=r.end_frame,
+                    state=r.state, confidence=r.confidence, source=r.source,  # NEW
+                )
+                for r in records
+            ]
+
+    def clear_game_state_segments(self, media_path: str):
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return
+            session.query(SQLAGameStateSegment).filter(
+                SQLAGameStateSegment.media_id == media.id
+            ).delete(synchronize_session=False)
+            session.commit()
+
+    def get_segment_at_frame(self, media_path: str, frame_number: int) -> Optional[GameStateSegment]:
+        """Return the segment (if any) whose range contains this frame."""
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return None
+
+            record = (
+                session.query(SQLAGameStateSegment)
+                .filter(
+                    SQLAGameStateSegment.media_id == media.id,
+                    SQLAGameStateSegment.start_frame <= frame_number,
+                    SQLAGameStateSegment.end_frame >= frame_number,
+                )
+                .first()
+            )
+
+            if record is None:
+                return None
+
+            return GameStateSegment(
+                segment_id=record.id,
+                media_name=media_path,
+                start_frame=record.start_frame,
+                end_frame=record.end_frame,
+                state=record.state,
+                confidence=record.confidence,
+                source=record.source,
+            )
+
+    def update_game_state_segment(
+            self, segment_id: int, start_frame: int, end_frame: int, state: str,
+    ) -> Optional[str]:
+        """
+        Apply an edit to an existing segment. Marks it "manual" since a human
+        touched it, regardless of how it originally got created.
+
+        Returns None on success, or an error message string on failure (e.g.
+        the new range collides with another row's exact start/end pair).
+        """
+        if start_frame > end_frame:
+            start_frame, end_frame = end_frame, start_frame
+
+        with self.Session() as session:
+            record = session.get(SQLAGameStateSegment, segment_id)
+            if record is None:
+                return "Tag no longer exists."
+
+            record.start_frame = start_frame
+            record.end_frame = end_frame
+            record.state = state
+            record.source = "manual"
+
+            try:
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                return f"Could not save changes: {e}"
+
+        return None
+
+    def delete_game_state_segment(self, segment_id: int):
+        with self.Session() as session:
+            session.query(SQLAGameStateSegment).filter(
+                SQLAGameStateSegment.id == segment_id
+            ).delete(synchronize_session=False)
             session.commit()
