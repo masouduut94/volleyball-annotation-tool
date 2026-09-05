@@ -1,10 +1,7 @@
-from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QFont, QPolygonF
-from PyQt6.QtWidgets import (
-    QGraphicsRectItem,
-    QGraphicsPolygonItem,
-    QGraphicsTextItem,
-)
 from PyQt6.QtCore import Qt, QPointF, QRectF
+from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QFont, QPolygonF
+from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsPolygonItem, QGraphicsTextItem
+
 from .undo_manager import MoveItemCommand, ResizeRectCommand, EditPolygonCommand
 
 

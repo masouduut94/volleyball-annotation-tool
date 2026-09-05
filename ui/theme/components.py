@@ -166,6 +166,25 @@ def icon_toolbutton(scope: str) -> str:
     """
 
 
+def navigation_button(scope: str = "bottomToolbar") -> str:
+    return f"""
+    QWidget#{scope} QPushButton#navigationButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: 6px;
+        padding: 0px;
+    }}
+
+    QWidget#{scope} QPushButton#navigationButton:hover {{
+        background-color: #3a3a3a;
+    }}
+
+    QWidget#{scope} QPushButton#navigationButton:pressed {{
+        background-color: #4a4a4a;
+    }}
+    """
+
+
 def surface_button(scope: str) -> str:
     """Filled buttons used in right sidebar (Quick Annotate, Configurations, Run)."""
     return f"""

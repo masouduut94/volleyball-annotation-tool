@@ -5,6 +5,8 @@ from PyQt6.QtGui import QIcon, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QSpinBox, QLabel, QSlider,
                              QToolTip, QStyleOptionSlider)
 
+from vb_gui.vb_annotator.resources.icons import AnimatedIconButton
+
 STATE_COLORS = {
     "play": "#3DDC84",
     "no-play": "#555A66",
@@ -381,6 +383,13 @@ class BottomToolbar(QWidget):
             self.main_window.previous_frame,
         )
 
+        self.play_btn = self._create_navigation_button(
+            "",
+            "Play (Space)",
+            "./resources/icons/bottom_toolbar/play.png",
+            self.main_window.toggle_playback,
+        )
+
         self.next_btn = self._create_navigation_button(
             "",
             "Next frame (D)",
@@ -457,11 +466,11 @@ class BottomToolbar(QWidget):
 
         layout.addWidget(self.double_prev_btn)
         layout.addWidget(self.prev_btn)
-
-        layout.addWidget(self.frame_slider)
-
+        layout.addWidget(self.play_btn)
         layout.addWidget(self.next_btn)
         layout.addWidget(self.double_next_btn)
+
+        layout.addWidget(self.frame_slider)
 
         layout.addWidget(separator1)
 
@@ -485,16 +494,10 @@ class BottomToolbar(QWidget):
         self.frame_slider.set_pending_marker(frame, state)
 
     @staticmethod
-    def _create_navigation_button(text: str, tooltip: str, icon_path: str, callback,
-                                  icon_size=25, ):
-        """Create a styled navigation button."""
-
-        btn = QPushButton(text)
-        btn.setToolTip(tooltip)
-        btn.setIcon(QIcon(icon_path))
-        btn.setIconSize(QSize(icon_size, icon_size))
+    def _create_navigation_button(text: str, tooltip: str, icon_path: str, callback, icon_size=25):
+        """Create an icon-only navigation button."""
+        btn = AnimatedIconButton(icon_path, tooltip, icon_size)
         btn.clicked.connect(callback)
-
         return btn
 
     # -------------------------------------------------------------
@@ -605,6 +608,16 @@ class BottomToolbar(QWidget):
 
         return self.frame_spin.value()
 
-    # -------------------------------------------------------------
-    # Total frames
-    # -------------------------------------------------------------
+    def set_playback_state(self, is_playing: bool):
+        """
+        Update the play button icon and tooltip depending
+        on the current playback state.
+        """
+
+        if is_playing:
+            self.play_btn.setIcon(QIcon("./resources/icons/bottom_toolbar/pause.png"))
+            self.play_btn.setToolTip("Pause (Space)")
+
+        else:
+            self.play_btn.setIcon(QIcon("./resources/icons/bottom_toolbar/play.png"))
+            self.play_btn.setToolTip("Play (Space)")

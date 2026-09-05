@@ -41,33 +41,15 @@ class LayerLabel(Base):
     __tablename__ = "labels"  # keep old table name
 
     id = Column(Integer, primary_key=True)
-
-    layer_id = Column(
-        Integer,
-        ForeignKey("layers.id"),
-        nullable=False,
-    )
-
+    layer_id = Column(Integer, ForeignKey("layers.id"), nullable=False)
     name = Column(String(100), nullable=False)
     color = Column(String(7), nullable=False)
+    layer = relationship("Layer", back_populates="labels")
 
-    layer = relationship(
-        "Layer",
-        back_populates="labels",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "layer_id",
-            "name",
-            name="uq_layer_label",
-        ),
-    )
+    __table_args__ = (UniqueConstraint("layer_id", "name", name="uq_layer_label"),)
 
     def __repr__(self):
-        return (
-            f"<LayerLabel(name={self.name}, color={self.color})>"
-        )
+        return f"<LayerLabel(name={self.name}, color={self.color})>"
 
 
 # ------------------------------------------------------------------
@@ -78,7 +60,6 @@ class Media(Base):
     __tablename__ = "media"
 
     id = Column(Integer, primary_key=True)
-
     path = Column(Text, unique=True, nullable=False)
     media_type = Column(String(10), nullable=False)
     width = Column(Integer, nullable=False)
@@ -103,7 +84,6 @@ class Annotation(Base):
     __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True)
-
     is_ai_generated = Column(Boolean, nullable=False, default=False)
     confirmed = Column(Boolean, nullable=False, default=True)
     media_id = Column(Integer, ForeignKey("media.id"), nullable=False, )
@@ -117,15 +97,17 @@ class Annotation(Base):
     media = relationship("Media", back_populates="annotations", )
     layer = relationship("Layer", back_populates="annotations", )
     label = relationship("LayerLabel", )
-    __table_args__ = (UniqueConstraint(
-        "media_id",
-        "layer_id",
-        "frame_number",
-        "label_id",
-        "shape_type",
-        "geometry",
-        name="uq_annotation",
-    ),)
+    __table_args__ = (
+        UniqueConstraint(
+            "media_id",
+            "layer_id",
+            "frame_number",
+            "label_id",
+            "shape_type",
+            "geometry",
+            name="uq_annotation",
+        ),
+    )
 
     def __repr__(self):
         return (
@@ -147,7 +129,6 @@ class FrameReview(Base):
     __tablename__ = "frame_reviews"
 
     id = Column(Integer, primary_key=True)
-
     media_id = Column(Integer, ForeignKey("media.id"), nullable=False)
     layer_id = Column(Integer, ForeignKey("layers.id"), nullable=False)
     frame_number = Column(Integer)
@@ -176,7 +157,6 @@ class ModelConfig(Base):
     __tablename__ = "model_configs"
 
     key = Column(String(50), primary_key=True)
-
     path = Column(Text)
 
 
@@ -194,7 +174,7 @@ class GameStateSegment(Base):
     end_frame = Column(Integer, nullable=False)
     state = Column(String(20), nullable=False)
     confidence = Column(Float, nullable=False, default=0.0)
-    source = Column(String(10), nullable=False, default="model")   # NEW: "model" | "manual"
+    source = Column(String(10), nullable=False, default="model")  # NEW: "model" | "manual"
     created_at = Column(DateTime, default=datetime.utcnow)
 
     media = relationship("Media", backref="game_state_segments")

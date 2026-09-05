@@ -1,6 +1,8 @@
 import math
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QPolygonF, QIcon
-from PyQt6.QtCore import Qt, QPointF, QRectF
+from PyQt6.QtCore import pyqtProperty, QPointF, QRectF, Qt, QSize, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import QPushButton
 
 
 def rectangle_icon(size=28):
@@ -64,3 +66,70 @@ def polygon_icon(size=28, sides=6):
 
     p.end()
     return QIcon(pix)
+
+
+class AnimatedIconButton(QPushButton):
+
+    def __init__(
+            self,
+            icon_path: str,
+            tooltip: str = "",
+            icon_size: int = 25,
+            parent=None,
+    ):
+        super().__init__(parent)
+
+        self.setObjectName("navigationButton")
+        self.setToolTip(tooltip)
+        self.setIcon(QIcon(icon_path))
+
+        # Base icon size
+        self._base_icon_size = icon_size
+        self._current_icon_size = icon_size
+        self.setIconSize(QSize(icon_size, icon_size))
+        # Button stays slightly larger than icon
+        self.setFixedSize(icon_size + 12, icon_size + 12)
+
+        # Animation
+        self._animation = QPropertyAnimation(self, b"animatedIconSize", self)
+        self._animation.setDuration(120)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    # --------------------------------------------------
+    # Animated Property
+    # --------------------------------------------------
+
+    def getAnimatedIconSize(self):
+        return self._current_icon_size
+
+    def setAnimatedIconSize(self, value):
+        self._current_icon_size = int(value)
+        self.setIconSize(QSize(self._current_icon_size, self._current_icon_size))
+
+    animatedIconSize = pyqtProperty(
+        int,
+        fget=getAnimatedIconSize,
+        fset=setAnimatedIconSize,
+    )
+
+    # --------------------------------------------------
+    # Hover Events
+    # --------------------------------------------------
+
+    def enterEvent(self, event):
+        self._animate_icon(self._base_icon_size, int(self._base_icon_size * 1.25))
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._animate_icon(self._current_icon_size, self._base_icon_size)
+        super().leaveEvent(event)
+
+    # --------------------------------------------------
+    # Animation Helper
+    # --------------------------------------------------
+
+    def _animate_icon(self, start, end):
+        self._animation.stop()
+        self._animation.setStartValue(start)
+        self._animation.setEndValue(end)
+        self._animation.start()

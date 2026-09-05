@@ -55,7 +55,10 @@ def bottom_bar_style(scope: str = "bottomToolbar") -> str:
             padding: 5px 10px;
         }}
         """,
+
         c.surface_button(scope),
+        c.navigation_button(scope),
+
         c.slider(scope),
         c.spinbox(scope),
     ])

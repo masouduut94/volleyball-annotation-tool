@@ -15,10 +15,15 @@ from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineI
                              QGraphicsEllipseItem, QMenu, QMessageBox)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
-from ui.undo_manager import DeleteAnnotationCommand, CreateAnnotationCommand, ChangeLabelCommand, \
+from ui.undo_manager import (
+    DeleteAnnotationCommand,
+    CreateAnnotationCommand,
+    ChangeLabelCommand,
     BulkCreateAnnotationCommand
+)
+
 from database.db import DatabaseManager
-from vb_gui.vb_annotator.database.data import Layer, Label, Annotation
+from database.data import Layer, Label, Annotation
 
 
 class ToolMode:
@@ -30,6 +35,7 @@ class ToolMode:
     RECTANGLE = "rectangle"
     POLYGON = "polygon"
     NONE = "none"  # neutral mode:
+
 
 class AnnotationScene(QGraphicsScene):
     """
@@ -797,7 +803,7 @@ class AnnotationScene(QGraphicsScene):
 
             self.addItem(item)
 
-            self.layer_items[layer_name].append(   # FIXED: was self.current_layer
+            self.layer_items[layer_name].append(  # FIXED: was self.current_layer
                 {
                     "item": item,
                     "type": ann.shape_type,

@@ -15,17 +15,8 @@ Key Features:
 
 from PyQt6.QtCore import pyqtSignal, QSize
 from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QFrame,
-    QToolButton
-)
-
-from vb_gui.vb_annotator.resources.icons import rectangle_icon, polygon_icon
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                             QFrame, QToolButton)
 
 
 class LeftSideBar(QWidget):
@@ -40,13 +31,11 @@ class LeftSideBar(QWidget):
         layerChanged: Emitted when the active layer changes (str)
         labelChanged: Emitted when the active label changes (str)
         toolChanged: Emitted when the annotation tool changes (str)
-        visibilityChanged: Emitted when a layer's visibility is toggled (str, bool)
     """
 
     layerChanged = pyqtSignal(str)
     labelChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(str)
-    visibilityChanged = pyqtSignal(str, bool)
 
     def __init__(self, db, parent=None):
         """
@@ -110,7 +99,6 @@ class LeftSideBar(QWidget):
         for layer in ["court", "players", "ball", "actions"]:
             row = LayerRow(layer)
             row.clicked.connect(self.set_layer)
-            row.visibilityChanged.connect(self.visibilityChanged.emit)
 
             self.layer_rows[layer] = row
             layout.addWidget(row)
@@ -158,7 +146,6 @@ class LeftSideBar(QWidget):
         self.none_btn.setFont(QFont("Arial", 14))
         self.none_btn.setToolTip("Selection Tool (Esc)")
         self.none_btn.clicked.connect(lambda: self.set_tool("none"))
-
 
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)
@@ -305,11 +292,9 @@ class LayerRow(QWidget):
 
     Signals:
         clicked: Emitted when the layer name is clicked (str)
-        visibilityChanged: Emitted when visibility is toggled (str, bool)
     """
 
     clicked = pyqtSignal(str)
-    visibilityChanged = pyqtSignal(str, bool)
 
     # lockChanged = pyqtSignal(str, bool)
 
@@ -335,12 +320,7 @@ class LayerRow(QWidget):
             lambda: self.clicked.emit(layer_name)
         )
 
-        self.eye_btn = QToolButton()
-        self.eye_btn.setText("👁")
-        self.eye_btn.clicked.connect(self.toggle_visibility)
-
         layout.addWidget(self.name_btn, 1)
-        layout.addWidget(self.eye_btn)
         # layout.addWidget(self.lock_btn)
 
         self.set_active(False)
@@ -360,22 +340,6 @@ class LayerRow(QWidget):
             self.setStyleSheet(
                 "background:transparent;"
             )
-
-    def toggle_visibility(self):
-        """
-        Toggle the visibility state of the layer and update the UI.
-
-        This method toggles the visible flag and updates the eye button
-        icon to reflect the current visibility state.
-        """
-        self.visible = not self.visible
-        self.eye_btn.setText(
-            "👁" if self.visible else "🚫"
-        )
-        self.visibilityChanged.emit(
-            self.layer_name,
-            self.visible,
-        )
 
 
 class LabelRow(QPushButton):

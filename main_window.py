@@ -2,9 +2,10 @@ import cv2
 import numpy as np
 from typing import Optional
 
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
-from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QDialog, QMessageBox
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog,
+                             QDialog, QMessageBox)
 
 from graphics_view import GraphicsView
 from graphics_scene import AnnotationScene, ToolMode
@@ -12,23 +13,21 @@ from graphics_scene import AnnotationScene, ToolMode
 from database.db import DatabaseManager
 from database.data import Annotation, Layer
 
-from config_dialog import ConfigDialog
-
 from services.auto_annotator import AutoAnnotator
+from services.game_state_worker import GameStateWorker
 from services.yolo_export_worker import YOLOExportWorker
 from services.batch_inference import BatchInferenceDialog
 from services.game_state_classifier import GameStateClassifier
-from services.game_state_worker import GameStateWorker
 
 from ui.utils import information_box
 from ui.top_toolbar import TopToolbar
 from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
 from ui.bottom_toolbar import BottomToolbar
-from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
-from ui.export_progress_dialog import ExportProgressDialog
 from ui.confirmation_bar import ConfirmationBar
 from ui.game_state_dialog import GameStateRangeDialog
+from ui.export_progress_dialog import ExportProgressDialog
+from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +53,16 @@ class MainWindow(QMainWindow):
         self.cap = None
         self.total_frames = 0
 
+        # ---------------------------------------------------------
+        # Video Playback
+        # ---------------------------------------------------------
+
+        self.playback_timer = QTimer(self)
+        self.playback_timer.timeout.connect(self._play_next_frame)
+
+        self.is_playing = False
+        self.video_fps = 30.0
+
         self.original_width = 960
         self.original_height = 540
 
@@ -77,6 +86,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("D"), self, activated=self.next_frame)
         QShortcut(QKeySequence("Q"), self, activated=self.previous_15_frame)
         QShortcut(QKeySequence("E"), self, activated=self.next_15_frame)
+        QShortcut(QKeySequence("Space"), self, activated=self.toggle_playback)
 
         # Top toolbar
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
@@ -158,11 +168,6 @@ class MainWindow(QMainWindow):
 
         self.activate_rectangle()
 
-        # Layers option
-        self.left_toolbar.visibilityChanged.connect(
-            self.layer_visibility_changed
-        )
-
         return self.left_toolbar
 
     def _create_right_sidebar(self):
@@ -173,7 +178,6 @@ class MainWindow(QMainWindow):
         )
         self.right_sidebar.detectRequested.connect(self.run_ai_detection)
         self.right_sidebar.configureJobRequested.connect(self.open_batch_inference)
-        self.right_sidebar.settingsRequested.connect(self.open_config)
         self.right_sidebar.setPathRequested.connect(self.set_model_path)
         self.right_sidebar.gameStateDetectRequested.connect(self.open_game_state_dialog)
 
@@ -186,11 +190,6 @@ class MainWindow(QMainWindow):
         self.right_sidebar.tagEditDeleteRequested.connect(self.tag_edit_delete)
 
         return self.right_sidebar
-
-    def open_config(self):
-        dialog = ConfigDialog(self.db, self)
-        if dialog.exec():
-            self.refresh_ai_sidebar()
 
     def refresh_ai_sidebar(self):
         if not hasattr(self, "right_sidebar"):
@@ -255,50 +254,50 @@ class MainWindow(QMainWindow):
     # Tools
     # ---------------------------------------------------------
 
-    def layer_visibility_changed(self, layer, visible):
-        self.visible_layers[layer] = visible
-        self.reload_visible_layers()
+    # def layer_visibility_changed(self, layer, visible):
+    #     self.visible_layers[layer] = visible
+    #     self.reload_visible_layers()
 
-    def reload_visible_layers(self):
-        path, _, frame = self.current_media_info()
-
-        if path is None:
-            return
-
-        # Clear all rendered annotation items
-        self.scene.clear_annotations()
-
-        # Clear label registry in the scene
-        self.scene.layer_labels.clear()
-
-        for layer_name, visible in self.visible_layers.items():
-            if not visible:
-                continue
-
-            layer = self.db.get_layer(layer_name)
-
-            if layer is None:
-                continue
-
-            # Register labels for this layer
-            labels = layer.labels
-
-            self.scene.set_layer_labels(layer.name, labels)
-
-            # Load annotations for this layer
-            annotations = self.db.load_annotations(
-                media_path=path,
-                layer_id=layer.layer_id,
-                frame_number=frame,
-            )
-
-            self.scene.load_annotations(annotations, layer_name)
-
-        # Update the scene's active layer
-        self.scene.set_current_layer(self.current_layer)
-
-        # Emit a single update notification
-        self.scene.annotation_changed.emit()
+    # def reload_visible_layers(self):
+    #     path, _, frame = self.current_media_info()
+    #
+    #     if path is None:
+    #         return
+    #
+    #     # Clear all rendered annotation items
+    #     self.scene.clear_annotations()
+    #
+    #     # Clear label registry in the scene
+    #     self.scene.layer_labels.clear()
+    #
+    #     for layer_name, visible in self.visible_layers.items():
+    #         if not visible:
+    #             continue
+    #
+    #         layer = self.db.get_layer(layer_name)
+    #
+    #         if layer is None:
+    #             continue
+    #
+    #         # Register labels for this layer
+    #         labels = layer.labels
+    #
+    #         self.scene.set_layer_labels(layer.name, labels)
+    #
+    #         # Load annotations for this layer
+    #         annotations = self.db.load_annotations(
+    #             media_path=path,
+    #             layer_id=layer.layer_id,
+    #             frame_number=frame,
+    #         )
+    #
+    #         self.scene.load_annotations(annotations, layer_name)
+    #
+    #     # Update the scene's active layer
+    #     self.scene.set_current_layer(self.current_layer)
+    #
+    #     # Emit a single update notification
+    #     self.scene.annotation_changed.emit()
 
     def activate_rectangle(self):
         self.left_toolbar.sync_tool_visuals("rectangle")  # was: set_tool(...)
@@ -330,6 +329,8 @@ class MainWindow(QMainWindow):
 
         if not files:
             return
+
+        self.pause_playback()
 
         self.cap = None
         self.video_path = None
@@ -407,17 +408,20 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        self.pause_playback()
+
         self.image_paths = []
 
         self.video_path = path
         self.cap = cv2.VideoCapture(path)
-
-        self.total_frames = int(
-            self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        )
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.video_fps <= 0:
+            self.video_fps = 20.0
 
         self.bottom_toolbar.set_frame_range(self.total_frames - 1)
         self.right_sidebar.set_tag_max_frame(self.total_frames - 1)
+        # Fallback in case OpenCV cannot determine FPS.
 
         self.goto_frame(0)
 
@@ -472,6 +476,7 @@ class MainWindow(QMainWindow):
                 self.load_current_image()
 
     def next_15_frame(self):
+        self.pause_playback()
         if self.cap is not None:
             if self.bottom_toolbar.get_current_frame() < self.total_frames - 15:
                 self.bottom_toolbar.set_current_frame(
@@ -485,6 +490,7 @@ class MainWindow(QMainWindow):
                 self.load_current_image()
 
     def previous_frame(self):
+        self.pause_playback()
         if self.bottom_toolbar.get_current_frame() > 0:
             new_frame = self.bottom_toolbar.get_current_frame() - 1
             self.bottom_toolbar.set_current_frame(new_frame)
@@ -495,6 +501,7 @@ class MainWindow(QMainWindow):
                 self.load_current_image()
 
     def previous_15_frame(self):
+        self.pause_playback()
         if self.bottom_toolbar.get_current_frame() - 15 > 0:
             new_frame = self.bottom_toolbar.get_current_frame() - 15
             self.bottom_toolbar.set_current_frame(new_frame)
@@ -1076,3 +1083,88 @@ class MainWindow(QMainWindow):
         self._tag_editing_segment = None
         self.right_sidebar.set_tag_editing(None)
         self.load_game_state_segments()
+
+    # ---------------------------------------------------------
+    # Video Playback
+    # ---------------------------------------------------------
+
+    def toggle_playback(self):
+        """
+        Toggle between playing and pausing the current video.
+        """
+
+        # Playback only makes sense for videos.
+        if self.cap is None:
+            return
+
+        if self.is_playing:
+            self.pause_playback()
+        else:
+            self.start_playback()
+
+    def start_playback(self):
+        """
+        Start video playback.
+        """
+
+        if self.cap is None:
+            return
+
+        # Do not start playback if we are already playing.
+        if self.is_playing:
+            return
+
+        # If we are already at the final frame, restart from frame 0.
+        current_frame = self.bottom_toolbar.get_current_frame()
+
+        if current_frame >= self.total_frames - 1:
+            self.goto_frame(0)
+
+        # Calculate timer interval from video FPS.
+        fps = self.video_fps
+
+        if fps <= 0:
+            fps = 30.0
+
+        interval_ms = max(1, int(1000 / fps))
+
+        self.playback_timer.start(interval_ms)
+
+        self.is_playing = True
+
+        # Update toolbar appearance.
+        self.bottom_toolbar.set_playback_state(True)
+
+    def pause_playback(self):
+        """
+        Pause video playback.
+        """
+
+        if not self.is_playing:
+            return
+
+        self.playback_timer.stop()
+
+        self.is_playing = False
+
+        # Restore play icon.
+        self.bottom_toolbar.set_playback_state(False)
+
+    def _play_next_frame(self):
+        """
+        Called automatically by the playback timer.
+        """
+
+        if self.cap is None:
+            self.pause_playback()
+            return
+
+        current_frame = self.bottom_toolbar.get_current_frame()
+
+        # Stop automatically at the final frame.
+        if current_frame >= self.total_frames - 1:
+            self.pause_playback()
+            return
+
+        # Move forward one frame.
+        self.next_frame()

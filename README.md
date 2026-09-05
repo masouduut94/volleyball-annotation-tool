@@ -826,6 +826,6 @@ Icons from:
 <a href="https://www.flaticon.com/free-icons/action" title="action icons">Action icons created by Magnific - Flaticon</a>
 <a href="https://www.flaticon.com/free-icons/volleyball" title="volleyball icons">Volleyball icons created by Leremy - Flaticon</a>
 <a href="https://www.flaticon.com/free-icons/clapperboard" title="clapperboard icons">Clapperboard icons created by SumberRejeki - Flaticon</a>
-
-
+<a href="https://www.flaticon.com/free-icons/triangle" title="triangle icons">Triangle icons created by nawicon - Flaticon</a>
+<a href="https://www.flaticon.com/free-icons/ui" title="ui icons">Ui icons created by -Artist - Flaticon</a>
 
