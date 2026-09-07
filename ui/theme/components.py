@@ -153,18 +153,21 @@ def tool_toggle_button(scope: str) -> str:
 
 def icon_toolbutton(scope: str) -> str:
     return f"""
-    #{scope} QToolButton {{
-        background: transparent;
+    #{scope} QToolButton#ToolButton {{
+        background-color: transparent;
         border: none;
-        color: {Colors.TEXT_MUTED};
-        padding: 4px;
+        border-radius: 6px;
+        padding: 0px;
     }}
 
-    #{scope} QToolButton:hover {{
-        color: white;
+    #{scope} QToolButton#ToolButton:hover {{
+        background-color: #3a3a3a;
+    }}
+    
+    #{scope} QToolButton#ToolButton:pressed {{
+        background-color: #4a4a4a;
     }}
     """
-
 
 def navigation_button(scope: str = "bottomToolbar") -> str:
     return f"""

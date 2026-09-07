@@ -13,10 +13,9 @@ Key Features:
 - Dynamic UI updates based on layer selection
 """
 
-from PyQt6.QtCore import pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QFrame, QToolButton)
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame)
+from vb_gui.vb_annotator.ui.utils import create_navigation_button
 
 
 class LeftSideBar(QWidget):
@@ -119,33 +118,31 @@ class LeftSideBar(QWidget):
 
         tools = QHBoxLayout()
         tools.setSpacing(8)
+        icon_size = 28
 
-        icon_size = 30
-        btn_size = 40
-        self.rect_btn = QPushButton()
-        self.rect_btn.setIcon(QIcon("./resources/icons/tools/rectangle.png"))
-        self.rect_btn.setContentsMargins(0, 0, 0, 0)
-        self.rect_btn.setFixedSize(btn_size, btn_size)
-        self.rect_btn.setIconSize(QSize(icon_size, icon_size))
-        self.rect_btn.setFont(QFont("Arial", 14))
-        self.rect_btn.setToolTip("Rectangle Tool (R)")
-        self.rect_btn.clicked.connect(lambda: self.set_tool("rectangle"))
+        self.rect_btn = create_navigation_button(
+            tooltip="Rectangle Tool (R)",
+            icon_path="./resources/icons/tools/rectangle.png",
+            callback=lambda: self.set_tool("rectangle"),
+            object_name="tool",
+            icon_size=icon_size,
+        )
 
-        self.poly_btn = QPushButton()
-        self.poly_btn.setIcon(QIcon("./resources/icons/tools/pentagon.png"))
-        self.poly_btn.setFixedSize(btn_size, btn_size)
-        self.poly_btn.setIconSize(QSize(icon_size, icon_size))
-        self.poly_btn.setFont(QFont("Arial", 14))
-        self.poly_btn.setToolTip("Polygon Tool (P)")
-        self.poly_btn.clicked.connect(lambda: self.set_tool("polygon"))
+        self.poly_btn = create_navigation_button(
+            tooltip="Polygon Tool (P)",
+            icon_path="./resources/icons/tools/pentagon.png",
+            callback=lambda: self.set_tool("polygon"),
+            object_name="tool",
+            icon_size=icon_size,
+        )
 
-        self.none_btn = QPushButton()
-        self.none_btn.setIcon(QIcon("./resources/icons/tools/cursor.png"))
-        self.none_btn.setFixedSize(btn_size, btn_size)
-        self.none_btn.setIconSize(QSize(icon_size, icon_size))
-        self.none_btn.setFont(QFont("Arial", 14))
-        self.none_btn.setToolTip("Selection Tool (Esc)")
-        self.none_btn.clicked.connect(lambda: self.set_tool("none"))
+        self.none_btn = create_navigation_button(
+            tooltip="Selection tool (Esc)",
+            icon_path="./resources/icons/tools/cursor.png",
+            callback=lambda: self.set_tool("none"),
+            object_name="tool",
+            icon_size=icon_size-5,
+        )
 
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)

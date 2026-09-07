@@ -75,11 +75,12 @@ class AnimatedIconButton(QPushButton):
             icon_path: str,
             tooltip: str = "",
             icon_size: int = 25,
+            object_name: str = "navigationButton",
             parent=None,
     ):
         super().__init__(parent)
 
-        self.setObjectName("navigationButton")
+        self.setObjectName(object_name)
         self.setToolTip(tooltip)
         self.setIcon(QIcon(icon_path))
 

@@ -71,15 +71,6 @@ class DatabaseManager:
                 return
 
             layers = {
-                "court": [
-                    ("net", "#4927F5"),
-                    ("attack zone", "#128DE5"),
-                    ("back zone", "#FFD814"),
-                ],
-                "players": [
-                    ("player", "#27D3F5"),
-                    ("libero", "#B027F5"),
-                ],
                 "ball": [
                     ("ball", "#6CF527"),
                 ],
@@ -87,7 +78,17 @@ class DatabaseManager:
                     ("spike", "#F5276C"),
                     ("block", "#F5B027"),
                     ("set", "#F54927"),
-                    ("receive", "#FFAA00"),
+                    ("receive", "#7b00ff"),
+                ],
+                "players": [
+                    ("player", "#27D3F5"),
+                    ("libero", "#B027F5"),
+                    ("referee", "ff0080"),
+                ],
+                "court": [
+                    ("net", "#4927F5"),
+                    ("attack zone", "#128DE5"),
+                    ("back zone", "#FFD814"),
                 ],
             }
 
