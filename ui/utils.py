@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import QToolButton, QStyleOptionButton, QStyle, QWidget, QVBoxLayout
 from PyQt6.QtGui import QIcon, QPainter, QPainterPath, QColor
 from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QPushButton
-from PyQt6.QtCore import (QTimer, Qt, pyqtProperty, QSize, QPropertyAnimation, QEasingCurve, QRect, QPoint)
+from PyQt6.QtCore import (QTimer, Qt, pyqtProperty, QSize, QPropertyAnimation,
+                          QEasingCurve, QRect, QPoint, QObject, QEvent)
 
 
 class CustomToolTip(QWidget):
@@ -18,27 +19,18 @@ class CustomToolTip(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.text_label = QLabel(text, self)
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.text_label.setStyleSheet("""
             QLabel {
-                color: #FFFFFF;
+                color: white;
                 font-size: 11px;
-                font-weight: 400;
                 background: transparent;
             }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            10,  # left
-            5,  # top
-            10,  # right
-            11  # bottom = space for triangle
-        )
-
+        layout.setContentsMargins(10, 5, 10, 11)
         layout.setSpacing(0)
         layout.addWidget(self.text_label)
-
         self.adjustSize()
 
     def setText(self, text):
@@ -47,14 +39,15 @@ class CustomToolTip(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
         rect_height = (self.height() - self.TRIANGLE_HEIGHT)
-        # Main rectangle
         path = QPainterPath()
+
+        # Main rounded rectangle
         path.addRoundedRect(0, 0, self.width(), rect_height, 4, 4)
 
-        # Bottom triangle
+        # Triangle
         center_x = self.width() / 2
         triangle = QPainterPath()
         triangle.moveTo(center_x - 6, rect_height)
@@ -64,6 +57,58 @@ class CustomToolTip(QWidget):
         triangle.closeSubpath()
         path.addPath(triangle)
         painter.fillPath(path, QColor("#1E1E1E"))
+
+
+class TooltipManager(QObject):
+    def __init__(self, widget, text, position="top", delay=500):
+        super().__init__(widget)
+
+        self.widget = widget
+        self.text = text
+        self.position = position
+        self.delay = delay
+
+        self.tooltip = CustomToolTip(text)
+
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.show_tooltip)
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj == self.widget:
+            if event.type() == QEvent.Type.Enter:
+                self.timer.start(self.delay)
+
+            elif event.type() == QEvent.Type.Leave:
+                self.timer.stop()
+                self.tooltip.hide()
+
+        return super().eventFilter(obj, event)
+
+    def show_tooltip(self):
+        if not self.widget.isVisible():
+            return
+
+        self.tooltip.adjustSize()
+        global_pos = self.widget.mapToGlobal(QPoint(0, 0))
+        tooltip_width = self.tooltip.width()
+        tooltip_height = self.tooltip.height()
+
+        if self.position == "top":
+            x = (global_pos.x() + self.widget.width() // 2 - tooltip_width // 2)
+            y = (global_pos.y() - tooltip_height - 5)
+
+        elif self.position == "bottom":
+            x = (global_pos.x() + self.widget.width() // 2 - tooltip_width // 2)
+            y = (global_pos.y() + self.widget.height() + 5)
+
+        else:
+            x = global_pos.x()
+            y = global_pos.y()
+
+        self.tooltip.move(x, y)
+        self.tooltip.show()
 
 
 class AnimatedIconButton(QPushButton):
@@ -77,44 +122,26 @@ class AnimatedIconButton(QPushButton):
             parent=None,
     ):
         super().__init__(parent)
-
+        self._custom_tooltip_manager = None
         self.setObjectName(object_name)
 
-        # Store tooltip text
-        self._tooltip_text = tooltip
-        self._custom_tooltip = None
-
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-
         self.setIcon(QIcon(icon_path))
+
+        if tooltip:
+            set_custom_tooltip(self, tooltip, position="top")
 
         # Base icon size
         self._base_icon_size = icon_size
         self._current_icon_size = icon_size
-
         self.setIconSize(QSize(icon_size, icon_size))
 
         # Button stays slightly larger than icon
         self.setFixedSize(icon_size + 12, icon_size + 12)
-
         # Animation
-        self._animation = QPropertyAnimation(
-            self,
-            b"animatedIconSize",
-            self
-        )
-
+        self._animation = QPropertyAnimation(self, b"animatedIconSize", self)
         self._animation.setDuration(120)
-        self._animation.setEasingCurve(
-            QEasingCurve.Type.OutCubic
-        )
-
-        # Tooltip delay
-        self._tooltip_timer = QTimer(self)
-        self._tooltip_timer.setSingleShot(True)
-        self._tooltip_timer.timeout.connect(
-            self._show_custom_tooltip
-        )
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     # --------------------------------------------------
     # Animated Property
@@ -147,60 +174,13 @@ class AnimatedIconButton(QPushButton):
 
         # Animate icon
         self._animate_icon(self._base_icon_size, int(self._base_icon_size * 1.25))
-
-        # Start tooltip timer
-        if self._tooltip_text:
-            self._tooltip_timer.start(500)
-
         super().enterEvent(event)
 
     def leaveEvent(self, event):
 
         # Animate icon back
-        self._animate_icon(
-            self._current_icon_size,
-            self._base_icon_size
-        )
-
-        # Stop pending tooltip
-        self._tooltip_timer.stop()
-
-        # Hide tooltip
-        self._hide_custom_tooltip()
-
+        self._animate_icon(self._current_icon_size, self._base_icon_size)
         super().leaveEvent(event)
-
-    # --------------------------------------------------
-    # Tooltip
-    # --------------------------------------------------
-
-    def _show_custom_tooltip(self):
-
-        if not self._tooltip_text:
-            return
-
-        if self._custom_tooltip is None:
-            self._custom_tooltip = CustomToolTip(self._tooltip_text)
-
-        else:
-            self._custom_tooltip.setText(self._tooltip_text)
-
-        self._custom_tooltip.adjustSize()
-        # Get global position of button
-        button_pos = self.mapToGlobal(QPoint(0, 0))
-        tooltip_width = self._custom_tooltip.width()
-        tooltip_height = self._custom_tooltip.height()
-
-        # Center tooltip horizontally above button
-        x = (button_pos.x() + self.width() // 2 - tooltip_width // 2)
-        # Position above button
-        y = (button_pos.y() - tooltip_height - 5)
-        self._custom_tooltip.move(x, y)
-        self._custom_tooltip.show()
-
-    def _hide_custom_tooltip(self):
-        if self._custom_tooltip is not None:
-            self._custom_tooltip.hide()
 
     # --------------------------------------------------
     # Animation Helper
@@ -300,6 +280,20 @@ def show_help_dialog(text: str, parent=None):
     # QToolTip.showText(parent.mapToGlobal(QPoint(0, 0)), text, parent)
 
 
+def set_custom_tooltip(widget, text, position="top", delay=500):
+    tooltip_manager = TooltipManager(
+        widget=widget,
+        text=text,
+        position=position,
+        delay=delay,
+    )
+
+    # Store reference directly on widget
+    widget._custom_tooltip_manager = tooltip_manager
+
+    return tooltip_manager
+
+
 def create_navigation_button(
         tooltip: str,
         icon_path: str,
@@ -310,9 +304,9 @@ def create_navigation_button(
     """Create an icon-only navigation button."""
     btn = AnimatedIconButton(
         icon_path=icon_path,
-        tooltip=tooltip,
         icon_size=icon_size,
-        object_name=object_name
+        object_name=object_name,
+        tooltip=tooltip
     )
     btn.clicked.connect(callback)
     return btn

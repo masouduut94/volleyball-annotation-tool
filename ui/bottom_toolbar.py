@@ -420,6 +420,7 @@ class BottomToolbar(QWidget):
         self.frame_slider.setValue(0)
 
         self.frame_slider.setToolTip("Seek to frame")
+        # Set tooltip replace with ToolTipManager
 
         # Give the slider a reasonable width
         self.frame_slider.setMinimumWidth(250)
