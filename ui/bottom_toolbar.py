@@ -27,7 +27,6 @@ class FrameSlider(QSlider):
         # __init__ runs (e.g. as soon as the widget is added to a layout),
         # so anything paintEvent touches must exist before that can happen.
         self.segments = []  # list of (start_frame, end_frame, state, source)
-        self._pending_marker = None  # (frame, state) or None
         self._drag_started = False
         self._label_color = "#FFFFFF"
 
@@ -118,16 +117,12 @@ class FrameSlider(QSlider):
         self.segments = segments or []
         self.update()
 
-    def set_pending_marker(self, frame, state):
-        self._pending_marker = (frame, state) if frame is not None else None
-        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         segments = getattr(self, "segments", [])
-        pending_marker = getattr(self, "_pending_marker", None)
 
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
@@ -177,16 +172,6 @@ class FrameSlider(QSlider):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor("#FFD814"))
                 painter.drawRect(QRectF(x1, track_rect.top() - 3, 2, track_rect.height() + 6))
-
-        # Pending tag marker — dashed line at the marked start frame, since
-        # nothing is committed until the end frame is also marked.
-        if pending_marker is not None:
-            p_frame, p_state = pending_marker
-            x = frame_to_x(p_frame)
-            pen = QPen(QColor(STATE_COLORS.get(p_state, "#FFFFFF")), 2, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(x, track_rect.top() - 6), QPointF(x, track_rect.bottom() + 6))
-            painter.setPen(Qt.PenStyle.NoPen)
 
         # Handle
         handle_rect = style.subControlRect(
@@ -346,7 +331,6 @@ class BottomToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent
-        self._pending_marker = None  # (frame, state) or None
 
         self._setup_ui()
 
@@ -491,9 +475,6 @@ class BottomToolbar(QWidget):
     def set_game_state_segments(self, segments):
         """segments: list of (start_frame, end_frame, state, source) tuples."""
         self.frame_slider.set_segments(segments)
-
-    def set_pending_tag_marker(self, frame, state):
-        self.frame_slider.set_pending_marker(frame, state)
 
     # -------------------------------------------------------------
     # Slider

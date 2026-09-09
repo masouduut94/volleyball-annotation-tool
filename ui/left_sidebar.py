@@ -1,56 +1,128 @@
 """
-Layer Sidebar Module for VB Annotator
+Left Sidebar Module for VB Annotator
 
-This module provides the sidebar user interface for the VB Annotator application,
-allowing users to manage layers, labels, annotation tools, and AI-assisted features.
-The LayerSidebar widget serves as the main control panel for annotation operations.
-
-Key Features:
-- Layer management with visibility toggling
-- Label selection for active layers
-- Tool selection (rectangle, polygon)
-- AI-assisted detection tools
-- Dynamic UI updates based on layer selection
+Two tabs:
+  - "Frame Annotations": the existing per-frame layer/label/tool controls
+    (YOLO-style rectangle/polygon annotation) — unchanged behavior.
+  - "Video Annotations": the manual game-state tagging workflow (pick a
+    label, Mark Start, Mark End). Editing/deleting already-saved segments
+    happens on the Temporal Timeline panel, not here.
 """
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                             QFrame, QTabWidget)
 from vb_gui.vb_annotator.ui.utils import create_navigation_button
+from vb_gui.vb_annotator.ui.temporal_timeline import STATE_COLORS
+
+
+def _separator():
+    line = QFrame()
+    line.setObjectName("line")
+    line.setFrameShape(QFrame.Shape.HLine)
+    return line
+
+
+def _section(text):
+    label = QLabel(text)
+    label.setObjectName("section")
+    return label
 
 
 class LeftSideBar(QWidget):
     """
-    Main sidebar widget for annotation controls.
-
-    This widget provides the complete sidebar interface including layer management,
-    label selection, tool selection, and AI assistance buttons. It maintains the
-    current state of layers, labels, and tools, and emits signals when changes occur.
-
-    Signals:
-        layerChanged: Emitted when the active layer changes (str)
-        labelChanged: Emitted when the active label changes (str)
-        toolChanged: Emitted when the annotation tool changes (str)
+    Top-level left sidebar: hosts the Frame/Video tab widget and re-emits
+    the Frame tab's signals under the same names MainWindow already
+    connects to, plus new signals for the Video tab's create-flow.
     """
 
+    # Frame Annotation tab (unchanged public surface)
+    layerChanged = pyqtSignal(str)
+    labelChanged = pyqtSignal(str)
+    toolChanged = pyqtSignal(str)
+
+    # Video Annotation tab (new)
+    videoLabelChanged = pyqtSignal(str)
+    videoMarkStartRequested = pyqtSignal(str)
+    videoMarkEndRequested = pyqtSignal()
+    videoCancelRequested = pyqtSignal()
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(340)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        self.frame_tab = FrameAnnotationTab(db)
+        self.frame_tab.layerChanged.connect(self.layerChanged.emit)
+        self.frame_tab.labelChanged.connect(self.labelChanged.emit)
+        self.frame_tab.toolChanged.connect(self.toolChanged.emit)
+        self.tabs.addTab(self.frame_tab, "Frame Annotations")
+
+        self.video_tab = VideoAnnotationTab()
+        self.video_tab.labelChanged.connect(self.videoLabelChanged.emit)
+        self.video_tab.markStartRequested.connect(self.videoMarkStartRequested.emit)
+        self.video_tab.markEndRequested.connect(self.videoMarkEndRequested.emit)
+        self.video_tab.cancelRequested.connect(self.videoCancelRequested.emit)
+        self.tabs.addTab(self.video_tab, "Video Annotations")
+
+    # ---------------------------------------------------------
+    # Delegation — keeps MainWindow's existing calls (set_layer,
+    # set_tool, sync_tool_visuals, clear_tool_selection) working
+    # unchanged against the Frame tab.
+    # ---------------------------------------------------------
+
+    def set_layer(self, layer):
+        self.frame_tab.set_layer(layer)
+
+    def set_tool(self, tool):
+        self.frame_tab.set_tool(tool)
+
+    def sync_tool_visuals(self, tool):
+        self.frame_tab.sync_tool_visuals(tool)
+
+    def clear_tool_selection(self):
+        self.frame_tab.clear_tool_selection()
+
+    # ---------------------------------------------------------
+    # Video tab delegation
+    # ---------------------------------------------------------
+
+    def set_video_tag_pending(self, pending: bool, start_frame=None, state=None):
+        self.video_tab.set_pending(pending, start_frame, state)
+
+    def cycle_layer(self):
+        self.frame_tab.cycle_layer()
+
+    def cycle_frame_label(self):
+        self.frame_tab.cycle_label()
+
+    def cycle_video_label(self):
+        self.video_tab.cycle_label()
+
+
+class FrameAnnotationTab(QWidget):
+    """
+    Per-frame annotation controls: layers, labels, and drawing tools.
+    This is the old LeftSideBar body, unchanged aside from the rename.
+    """
+
+    LAYER_ORDER = ["ball", "players", "actions", "court"]
     layerChanged = pyqtSignal(str)
     labelChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(str)
 
     def __init__(self, db, parent=None):
-        """
-        Initialize the LayerSidebar widget.
-
-        Args:
-            db: Database connection object containing layer and label data
-            parent: Parent widget (optional)
-        """
         super().__init__(parent)
 
-        self.setFixedWidth(260)
-
-        self.current_layer = "court"
-        self.current_label = "net"
-        self.current_tool = "rectangle"
+        self.current_layer = None
+        self.current_label = None
+        self.current_tool = None
 
         self.layer_rows = {}
         self.label_buttons = {}
@@ -67,23 +139,10 @@ class LeftSideBar(QWidget):
         }
 
         self._build_ui()
-        self.set_layer("court")
-        self.set_tool("rectangle")
+        self.set_layer("ball")
+        self.set_tool("none")
 
     def _build_ui(self):
-        """
-        Build the complete user interface for the sidebar.
-
-        This method creates all UI components including:
-        - Title header
-        - Layer list with visibility controls
-        - Label buttons for the active layer
-        - Tool selection buttons
-        - AI assistance buttons
-
-        All styling is applied through the stylesheet defined in this method.
-        """
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(2)
@@ -92,34 +151,38 @@ class LeftSideBar(QWidget):
         title.setObjectName("title")
         layout.addWidget(title)
 
-        layout.addWidget(self.separator())
-        layout.addWidget(self.section("Layers"))
+        layout.addWidget(_separator())
+        layout.addWidget(_section("Layers"))
 
-        for layer in ["court", "players", "ball", "actions"]:
+        for layer in ["ball", "players", "actions", "court"]:
             row = LayerRow(layer)
             row.clicked.connect(self.set_layer)
-
             self.layer_rows[layer] = row
             layout.addWidget(row)
 
-        layout.addWidget(self.separator())
-        layout.addWidget(self.section("Labels"))
+        layout.addWidget(_separator())
+        layout.addWidget(_section("Labels"))
 
         self.labels_container = QWidget()
         self.labels_layout = QVBoxLayout(self.labels_container)
         self.labels_layout.setContentsMargins(5, 5, 5, 5)
         self.labels_layout.setSpacing(5)
-
         layout.addWidget(self.labels_container)
 
-        layout.addWidget(self.separator())
-
-        layout.addWidget(self.section("Tools"))
+        layout.addWidget(_separator())
+        layout.addWidget(_section("Tools"))
 
         tools = QHBoxLayout()
         tools.setSpacing(8)
         icon_size = 28
 
+        self.none_btn = create_navigation_button(
+            tooltip="Selection tool (Esc)",
+            icon_path="./resources/icons/tools/cursor.png",
+            callback=lambda: self.set_tool("none"),
+            object_name="tool",
+            icon_size=icon_size - 5,
+        )
         self.rect_btn = create_navigation_button(
             tooltip="Rectangle Tool (R)",
             icon_path="./resources/icons/tools/rectangle.png",
@@ -127,7 +190,6 @@ class LeftSideBar(QWidget):
             object_name="tool",
             icon_size=icon_size,
         )
-
         self.poly_btn = create_navigation_button(
             tooltip="Polygon Tool (P)",
             icon_path="./resources/icons/tools/pentagon.png",
@@ -136,58 +198,15 @@ class LeftSideBar(QWidget):
             icon_size=icon_size,
         )
 
-        self.none_btn = create_navigation_button(
-            tooltip="Selection tool (Esc)",
-            icon_path="./resources/icons/tools/cursor.png",
-            callback=lambda: self.set_tool("none"),
-            object_name="tool",
-            icon_size=icon_size-5,
-        )
-
+        tools.addWidget(self.none_btn)
         tools.addWidget(self.rect_btn)
         tools.addWidget(self.poly_btn)
-        tools.addWidget(self.none_btn)
         tools.addStretch()
         layout.addLayout(tools)
-        layout.addWidget(self.separator())
-
+        layout.addWidget(_separator())
         layout.addStretch()
 
-    @staticmethod
-    def separator():
-        """
-        Create a horizontal separator line.
-
-        Returns:
-            QFrame: A horizontal line frame for visual separation
-        """
-        line = QFrame()
-        line.setObjectName("line")
-        line.setFrameShape(QFrame.Shape.HLine)
-        return line
-
-    @staticmethod
-    def section(text):
-        """
-        Create a section header label.
-
-        Args:
-            text (str): The section title text
-
-        Returns:
-            QLabel: A styled label for section headers
-        """
-        label = QLabel(text)
-        label.setObjectName("section")
-        return label
-
     def set_layer(self, layer):
-        """
-        Set the active layer and update the UI accordingly.
-
-        Args:
-            layer (str): Name of the layer to activate
-        """
         self.current_layer = layer
         self.layerChanged.emit(layer)
 
@@ -199,12 +218,6 @@ class LeftSideBar(QWidget):
         self.rebuild_labels()
 
     def rebuild_labels(self):
-        """
-        Rebuild the label buttons for the current active layer.
-
-        This method clears existing label buttons and creates new ones
-        based on the labels available for the current layer.
-        """
         while self.labels_layout.count():
             item = self.labels_layout.takeAt(0)
             widget = item.widget()
@@ -214,7 +227,6 @@ class LeftSideBar(QWidget):
         self.label_buttons.clear()
 
         labels = self.layer_labels[self.current_layer]
-
         self.current_label = labels[0][0]
 
         for name, color in labels:
@@ -226,51 +238,29 @@ class LeftSideBar(QWidget):
         self.set_label(self.current_label)
 
     def set_label(self, label):
-        """
-        Set the active label and update the UI accordingly.
-
-        Args:
-            label (str): Name of the label to activate
-        """
         self.current_label = label
-
         for name, btn in self.label_buttons.items():
             btn.setObjectName("activeLabel" if name == label else "labelButton")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-
         self.labelChanged.emit(label)
 
     def set_tool(self, tool):
-        """User-initiated tool selection (from clicking a tool button). Emits toolChanged."""
+        """User-initiated tool selection. Emits toolChanged."""
         self._apply_tool_visuals(tool)
         self.toolChanged.emit(tool)
-
         for btn in [self.rect_btn, self.poly_btn, self.none_btn]:
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
-        self.toolChanged.emit(tool)
-
     def clear_tool_selection(self):
-        """
-        Visually deselect both tool buttons (neutral cursor mode).
-        Does not emit toolChanged — this is meant to be called in *response*
-        to a mode change (e.g. Escape), not to trigger one.
-        """
         self._apply_tool_visuals("none")
 
     def sync_tool_visuals(self, tool):
-        """
-        Reflect the active tool in the UI without emitting toolChanged.
-        Used when MainWindow is the source of truth (e.g. syncing after the
-        scene's tool mode changed) and calling set_tool would loop back here.
-        """
         self._apply_tool_visuals(tool)
 
     def _apply_tool_visuals(self, tool):
         self.current_tool = tool
-
         self.rect_btn.setObjectName("toolActive" if tool == "rectangle" else "tool")
         self.poly_btn.setObjectName("toolActive" if tool == "polygon" else "tool")
         self.none_btn.setObjectName("toolActive" if tool == "none" else "tool")
@@ -279,85 +269,192 @@ class LeftSideBar(QWidget):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
+    def cycle_layer(self):
+        idx = self.LAYER_ORDER.index(self.current_layer) if self.current_layer in self.LAYER_ORDER else -1
+        next_layer = self.LAYER_ORDER[(idx + 1) % len(self.LAYER_ORDER)]
+        self.set_layer(next_layer)
 
-class LayerRow(QWidget):
+    def cycle_label(self):
+        names = [name for name, _ in self.layer_labels[self.current_layer]]
+        if not names:
+            return
+        idx = names.index(self.current_label) if self.current_label in names else -1
+        next_name = names[(idx + 1) % len(names)]
+        self.set_label(next_name)
+
+
+class VideoLabelRow(QWidget):
     """
-    Individual layer row widget for the sidebar.
-
-    This widget represents a single layer in the layer list, providing
-    click functionality for layer activation and visibility toggling.
-
-    Signals:
-        clicked: Emitted when the layer name is clicked (str)
+    Row for selecting a game-state label — styled like the Frame tab's
+    LayerRow (click to activate, orange highlight when active), with a
+    color swatch matching that label's color on the Temporal Timeline.
     """
-
     clicked = pyqtSignal(str)
 
-    # lockChanged = pyqtSignal(str, bool)
+    def __init__(self, key, display, color):
+        super().__init__()
+        self.key = key
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+
+        swatch = QLabel()
+        swatch.setFixedSize(14, 14)
+        swatch.setStyleSheet(f"background:{color}; border-radius:3px;")
+        layout.addWidget(swatch)
+
+        self.name_btn = QPushButton(display)
+        self.name_btn.setFlat(True)
+        self.name_btn.clicked.connect(lambda: self.clicked.emit(key))
+        layout.addWidget(self.name_btn, 1)
+
+        self.set_active(False)
+
+    def set_active(self, active):
+        if active:
+            self.setStyleSheet("background:#E95420; border-radius:8px;")
+        else:
+            self.setStyleSheet("background:transparent;")
+
+    def setEnabled(self, enabled):
+        super().setEnabled(enabled)
+        self.name_btn.setEnabled(enabled)
+
+
+class VideoAnnotationTab(QWidget):
+    """
+    Manual game-state tagging: pick a label, Mark Start, Mark End.
+    Nothing is written to the DB until both ends are set. Editing an
+    already-saved segment's range happens on the Temporal Timeline, not
+    here — this tab only creates new ones.
+    """
+
+    labelChanged = pyqtSignal(str)
+    markStartRequested = pyqtSignal(str)
+    markEndRequested = pyqtSignal()
+    cancelRequested = pyqtSignal()
+
+    STATES = [("service", "Service"), ("play", "In-Play"), ("no-play", "No-Play")]
+    STATE_ORDER = [key for key, _ in STATES]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pending = False
+        self.current_state = "service"
+        self.label_rows = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        layout.addWidget(_section("Game State Label  (Alt+3 to cycle)"))
+
+        for key, display in self.STATES:
+            row = VideoLabelRow(key, display, STATE_COLORS.get(key, "#FFFFFF"))
+            row.clicked.connect(self.set_label)
+            self.label_rows[key] = row
+            layout.addWidget(row)
+
+        self.set_label(self.current_state)
+
+        layout.addWidget(_separator())
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.action_button = QPushButton("Mark Start")
+        self.action_button.setFixedHeight(32)
+        self.action_button.clicked.connect(self._on_action_clicked)
+        layout.addWidget(self.action_button)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setFixedHeight(28)
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self.cancelRequested.emit)
+        layout.addWidget(self.cancel_button)
+
+        layout.addWidget(_separator())
+
+        hint = QLabel(
+            "Pick a label, then Mark Start at the beginning of the segment "
+            "and Mark End where it ends — nothing is saved until both ends "
+            "are set. Already-saved tags can be dragged, resized, or "
+            "deleted directly on the Temporal Timeline below the video."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9096A3; font-size: 11px;")
+        layout.addWidget(hint)
+
+        layout.addStretch()
+
+    def set_label(self, key):
+        self.current_state = key
+        for name, row in self.label_rows.items():
+            row.set_active(name == key)
+        self.labelChanged.emit(key)
+
+    def cycle_label(self):
+        if self._pending:
+            return  # don't allow switching label mid-tag
+        idx = self.STATE_ORDER.index(self.current_state)
+        next_state = self.STATE_ORDER[(idx + 1) % len(self.STATE_ORDER)]
+        self.set_label(next_state)
+
+    def _on_action_clicked(self):
+        if self._pending:
+            self.markEndRequested.emit()
+        else:
+            self.markStartRequested.emit(self.current_state)
+
+    def set_pending(self, pending: bool, start_frame=None, state=None):
+        self._pending = pending
+        for row in self.label_rows.values():
+            row.setEnabled(not pending)
+
+        if pending:
+            self.action_button.setText("Mark End")
+            self.cancel_button.setVisible(True)
+            self.status_label.setText(
+                f"Marking '{state}' — start at frame {start_frame}. "
+                f"Move to the end frame and click Mark End."
+            )
+        else:
+            self.action_button.setText("Mark Start")
+            self.cancel_button.setVisible(False)
+            self.status_label.setText("")
+
+
+class LayerRow(QWidget):
+    clicked = pyqtSignal(str)
 
     def __init__(self, layer_name):
-        """
-        Initialize a LayerRow widget.
-
-        Args:
-            layer_name (str): Name of the layer this row represents
-        """
         super().__init__()
-
         self.layer_name = layer_name
         self.visible = True
-        # self.locked = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
 
         self.name_btn = QPushButton(layer_name)
         self.name_btn.setFlat(True)
-        self.name_btn.clicked.connect(
-            lambda: self.clicked.emit(layer_name)
-        )
-
+        self.name_btn.clicked.connect(lambda: self.clicked.emit(layer_name))
         layout.addWidget(self.name_btn, 1)
-        # layout.addWidget(self.lock_btn)
 
         self.set_active(False)
 
     def set_active(self, active):
-        """
-        Set the visual state of the row to active or inactive.
-
-        Args:
-            active (bool): True to highlight as active, False otherwise
-        """
         if active:
-            self.setStyleSheet(
-                "background:#E95420; border-radius:8px;"
-            )
+            self.setStyleSheet("background:#E95420; border-radius:8px;")
         else:
-            self.setStyleSheet(
-                "background:transparent;"
-            )
+            self.setStyleSheet("background:transparent;")
 
 
 class LabelRow(QPushButton):
-    """
-    Individual label button widget.
-
-    This class represents a single label button in the label list,
-    displaying the label name with a color indicator.
-
-    Note: This class is currently not used in the main widget but
-    is maintained for potential future use.
-    """
-
     def __init__(self, name, color):
-        """
-        Initialize a LabelRow widget.
-
-        Args:
-            name (str): Name of the label
-            color (str): Color code for the label indicator
-        """
         super().__init__()
         self.label_name = name
         self.setText(f"●  {name}")

@@ -28,7 +28,7 @@ from ui.confirmation_bar import ConfirmationBar
 from ui.game_state_dialog import GameStateRangeDialog
 from ui.export_progress_dialog import ExportProgressDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
-
+from ui.temporal_timeline import TemporalTimelinePanel
 
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
@@ -102,7 +102,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Esc"), self, activated=self.set_tool_to_none)
         QShortcut(QKeySequence("P"), self, activated=self.activate_polygon)
         QShortcut(QKeySequence("R"), self, activated=self.activate_rectangle)
-
+        QShortcut(QKeySequence("Alt+1"), self, activated=self.cycle_layer)
+        QShortcut(QKeySequence("Alt+2"), self, activated=self.cycle_frame_label)
+        QShortcut(QKeySequence("Alt+3"), self, activated=self.cycle_video_label)
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
@@ -126,6 +128,12 @@ class MainWindow(QMainWindow):
         self.bottom_toolbar.previousFrame.connect(self.previous_frame)
         self.bottom_toolbar.nextFrame.connect(self.next_frame)
         self.bottom_toolbar.gotoFrame.connect(self.goto_frame)
+
+        self.timeline_panel = TemporalTimelinePanel()
+        self.timeline_panel.seekRequested.connect(self.goto_frame)
+        self.timeline_panel.applyChangesRequested.connect(self.on_timeline_apply_clicked)
+        self.timeline_panel.intervalDeleteRequested.connect(self.on_timeline_interval_delete_requested)
+        self.timeline_panel.setVisible(False)
 
         self.right_sidebar = self._create_right_sidebar()
 
@@ -159,6 +167,7 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(content_layout, 1)
         main_layout.addWidget(self.bottom_toolbar, 0)
+        main_layout.addWidget(self.timeline_panel, 0)
 
     def _create_left_toolbar(self):
         self.left_toolbar = LeftSideBar(self.db)
@@ -166,7 +175,10 @@ class MainWindow(QMainWindow):
         self.left_toolbar.labelChanged.connect(self.label_changed)
         self.left_toolbar.toolChanged.connect(self.tool_changed)
 
-        self.activate_rectangle()
+        self.left_toolbar.videoMarkStartRequested.connect(self.tag_mark_start)
+        self.left_toolbar.videoMarkEndRequested.connect(self.tag_mark_end)
+        self.left_toolbar.videoCancelRequested.connect(self.tag_cancel)
+        self.deactivate_tools()
 
         return self.left_toolbar
 
@@ -180,14 +192,6 @@ class MainWindow(QMainWindow):
         self.right_sidebar.configureJobRequested.connect(self.open_batch_inference)
         self.right_sidebar.setPathRequested.connect(self.set_model_path)
         self.right_sidebar.gameStateDetectRequested.connect(self.open_game_state_dialog)
-
-        # Image Tagging
-        self.right_sidebar.tagMarkStartRequested.connect(self.tag_mark_start)
-        self.right_sidebar.tagMarkEndRequested.connect(self.tag_mark_end)
-        self.right_sidebar.tagCancelRequested.connect(self.tag_cancel)
-        # in _create_right_sidebar, alongside the other tag connects:
-        self.right_sidebar.tagEditApplyRequested.connect(self.tag_edit_apply)
-        self.right_sidebar.tagEditDeleteRequested.connect(self.tag_edit_delete)
 
         return self.right_sidebar
 
@@ -250,61 +254,12 @@ class MainWindow(QMainWindow):
         self.left_toolbar.set_layer(layer_name)
         self.auto_annotate(model_key)
 
-    # ---------------------------------------------------------
-    # Tools
-    # ---------------------------------------------------------
-
-    # def layer_visibility_changed(self, layer, visible):
-    #     self.visible_layers[layer] = visible
-    #     self.reload_visible_layers()
-
-    # def reload_visible_layers(self):
-    #     path, _, frame = self.current_media_info()
-    #
-    #     if path is None:
-    #         return
-    #
-    #     # Clear all rendered annotation items
-    #     self.scene.clear_annotations()
-    #
-    #     # Clear label registry in the scene
-    #     self.scene.layer_labels.clear()
-    #
-    #     for layer_name, visible in self.visible_layers.items():
-    #         if not visible:
-    #             continue
-    #
-    #         layer = self.db.get_layer(layer_name)
-    #
-    #         if layer is None:
-    #             continue
-    #
-    #         # Register labels for this layer
-    #         labels = layer.labels
-    #
-    #         self.scene.set_layer_labels(layer.name, labels)
-    #
-    #         # Load annotations for this layer
-    #         annotations = self.db.load_annotations(
-    #             media_path=path,
-    #             layer_id=layer.layer_id,
-    #             frame_number=frame,
-    #         )
-    #
-    #         self.scene.load_annotations(annotations, layer_name)
-    #
-    #     # Update the scene's active layer
-    #     self.scene.set_current_layer(self.current_layer)
-    #
-    #     # Emit a single update notification
-    #     self.scene.annotation_changed.emit()
-
     def activate_rectangle(self):
-        self.left_toolbar.sync_tool_visuals("rectangle")  # was: set_tool(...)
+        self.left_toolbar.sync_tool_visuals("rectangle")
         self.scene.set_tool(ToolMode.RECTANGLE)
 
     def activate_polygon(self):
-        self.left_toolbar.sync_tool_visuals("polygon")  # was: set_tool(...)
+        self.left_toolbar.sync_tool_visuals("polygon")
         self.scene.set_tool(ToolMode.POLYGON)
 
     def deactivate_tools(self):
@@ -315,23 +270,27 @@ class MainWindow(QMainWindow):
         if mode == ToolMode.NONE:
             self.left_toolbar.clear_tool_selection()
 
+    def cycle_layer(self):
+        self.left_toolbar.cycle_layer()
+
+    def cycle_frame_label(self):
+        self.left_toolbar.cycle_frame_label()
+
+    def cycle_video_label(self):
+        self.left_toolbar.cycle_video_label()
+
     # ---------------------------------------------------------
     # Image loading
     # ---------------------------------------------------------
 
     def open_images(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Open Images",
-            "",
-            "Images (*.png *.jpg *.jpeg *.bmp)",
+            self, "Open Images", "", "Images (*.png *.jpg *.jpeg *.bmp)",
         )
-
         if not files:
             return
 
         self.pause_playback()
-
         self.cap = None
         self.video_path = None
 
@@ -339,7 +298,8 @@ class MainWindow(QMainWindow):
         self.current_index = 0
 
         self.bottom_toolbar.set_frame_range(len(files) - 1)
-        self.right_sidebar.set_tag_max_frame(len(files) - 1)
+        self.timeline_panel.setVisible(False)
+        self.load_game_state_segments()  # NEW — clears any leftover overlay from a prior video
 
         self.load_current_image()
 
@@ -399,17 +359,12 @@ class MainWindow(QMainWindow):
 
     def open_video(self):
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Video",
-            "",
-            "Videos (*.mp4 *.avi *.mov *.mkv)",
+            self, "Open Video", "", "Videos (*.mp4 *.avi *.mov *.mkv)",
         )
-
         if not path:
             return
 
         self.pause_playback()
-
         self.image_paths = []
 
         self.video_path = path
@@ -420,10 +375,12 @@ class MainWindow(QMainWindow):
             self.video_fps = 20.0
 
         self.bottom_toolbar.set_frame_range(self.total_frames - 1)
-        self.right_sidebar.set_tag_max_frame(self.total_frames - 1)
-        # Fallback in case OpenCV cannot determine FPS.
+        self.timeline_panel.set_max_frame(self.total_frames - 1)
+        self.timeline_panel.set_fps(self.video_fps)
+        self.timeline_panel.setVisible(True)
 
         self.goto_frame(0)
+        self.load_game_state_segments()
 
     def goto_frame(self, frame_number):
         frame = self.get_frame_by_number(frame_number)
@@ -455,8 +412,8 @@ class MainWindow(QMainWindow):
 
         # Update bottom toolbar
         self.bottom_toolbar.set_current_frame(frame_number)
+        self.timeline_panel.set_current_frame(frame_number)
         self.refresh_frame_confirmation_indicator()
-        self.refresh_tag_editing_state()
 
     # ---------------------------------------------------------
     # Navigation
@@ -541,11 +498,7 @@ class MainWindow(QMainWindow):
         layer = self.db.get_layer(self.current_layer)
 
         if path is None:
-            QMessageBox.warning(
-                self,
-                "No Media",
-                "Please open an image or video first.",
-            )
+            QMessageBox.warning(self, "No Media", "Please open an image or video first.")
             return
 
         self.db.save_annotations(
@@ -557,6 +510,13 @@ class MainWindow(QMainWindow):
             frame_number=frame,
             annotations=self.scene.export_annotations(self.current_layer, path, frame),
         )
+
+        # A single Save also commits any pending video-annotation (game-state)
+        # timeline edits, so the user doesn't need to separately hit "Apply
+        # Changes" on the timeline first.
+        video_edits = self.timeline_panel.get_pending_edits()
+        if video_edits:
+            self._write_video_annotation_edits(video_edits)
 
         information_box(self, message="✅ Annotations saved successfully.")
 
@@ -946,11 +906,13 @@ class MainWindow(QMainWindow):
     def load_game_state_segments(self):
         if self.video_path is None:
             self.bottom_toolbar.set_game_state_segments([])
+            self.timeline_panel.set_segments([])
             return
         segments = self.db.get_game_state_segments(self.video_path)
         self.bottom_toolbar.set_game_state_segments(
             [(s.start_frame, s.end_frame, s.state, s.source) for s in segments]
         )
+        self.timeline_panel.set_segments(segments)
 
     def get_ai_model_paths(self):
         return {
@@ -1002,8 +964,8 @@ class MainWindow(QMainWindow):
             return
         self._tag_pending_start = self.bottom_toolbar.get_current_frame()
         self._tag_pending_state = state
-        self.right_sidebar.set_tag_pending(True, self._tag_pending_start, state)
-        self.bottom_toolbar.set_pending_tag_marker(self._tag_pending_start, state)
+        self.left_toolbar.set_video_tag_pending(True, self._tag_pending_start, state)
+        self.timeline_panel.set_pending_marker(self._tag_pending_start, state)
 
     def tag_mark_end(self):
         if self._tag_pending_start is None:
@@ -1024,64 +986,71 @@ class MainWindow(QMainWindow):
 
         self._tag_pending_start = None
         self._tag_pending_state = None
-        self.right_sidebar.set_tag_pending(False)
-        self.bottom_toolbar.set_pending_tag_marker(None, None)
+        self.left_toolbar.set_video_tag_pending(False)
+        self.timeline_panel.set_pending_marker(None, None)
         self.load_game_state_segments()
-        self.refresh_tag_editing_state()
 
     def tag_cancel(self):
         self._tag_pending_start = None
         self._tag_pending_state = None
-        self.right_sidebar.set_tag_pending(False)
-        self.bottom_toolbar.set_pending_tag_marker(None, None)
-        self.refresh_tag_editing_state()
+        self.left_toolbar.set_video_tag_pending(False)
+        self.timeline_panel.set_pending_marker(None, None)
 
-    def refresh_tag_editing_state(self):
+    def _write_video_annotation_edits(self, edits: dict) -> int:
         """
-        Called after every frame navigation. Looks up whether the current
-        frame sits inside an existing segment and updates the sidebar's
-        Tag panel accordingly. A pending create always wins — we don't want
-        the edit panel popping up mid-way through marking a new tag.
+        Writes each (segment_id -> (start, end)) pair to the DB, preserving
+        each segment's existing label, then refreshes the timeline/slider.
+        Returns the number of segments actually written.
         """
-        if self.video_path is None:
-            self.right_sidebar.set_tag_editing(None)
-            return
+        if not edits or self.video_path is None:
+            return 0
 
-        frame = self.bottom_toolbar.get_current_frame()
-        self.right_sidebar.set_tag_current_frame(frame)
+        segments = self.db.get_game_state_segments(self.video_path)
+        by_id = {s.segment_id: s for s in segments}
+        written = 0
 
-        if self._tag_pending_start is not None:
-            return  # mid-create; leave the create panel showing
-
-        segment = self.db.get_segment_at_frame(self.video_path, frame)
-        self._tag_editing_segment = segment
-        self.right_sidebar.set_tag_editing(segment)
-
-    def tag_edit_apply(self, start_frame, end_frame, state):
-        if self._tag_editing_segment is None:
-            return
-
-        error = self.db.update_game_state_segment(
-            segment_id=self._tag_editing_segment.segment_id,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            state=state,
-        )
-
-        if error:
-            QMessageBox.warning(self, "Could Not Update Tag", error)
-            return
+        for segment_id, (start_frame, end_frame) in edits.items():
+            seg = by_id.get(segment_id)
+            if seg is None:
+                continue
+            error = self.db.update_game_state_segment(segment_id, start_frame, end_frame, seg.state)
+            if error:
+                QMessageBox.warning(self, "Could Not Update Tag", error)
+                continue
+            written += 1
 
         self.load_game_state_segments()
-        self.refresh_tag_editing_state()
+        return written
 
-    def tag_edit_delete(self):
-        if self._tag_editing_segment is None:
+    def on_timeline_apply_clicked(self, edits: dict):
+        """User explicitly clicked 'Apply Changes' on the timeline panel."""
+        written = self._write_video_annotation_edits(edits)
+        if written:
+            information_box(self, message="✅ Video annotations saved successfully.")
+
+    def on_timeline_interval_edited(self, segment_id, start_frame, end_frame):
+        """Timeline drag only changes the range, never the label, so look up
+        the segment's current state and keep it."""
+        if self.video_path is None:
+            return
+        segments = self.db.get_game_state_segments(self.video_path)
+        match = next((s for s in segments if s.segment_id == segment_id), None)
+        if match is None:
             return
 
-        self.db.delete_game_state_segment(self._tag_editing_segment.segment_id)
-        self._tag_editing_segment = None
-        self.right_sidebar.set_tag_editing(None)
+        error = self.db.update_game_state_segment(segment_id, start_frame, end_frame, match.state)
+        if error:
+            QMessageBox.warning(self, "Could Not Update Tag", error)
+        self.load_game_state_segments()
+
+    def on_timeline_interval_delete_requested(self, segment_id):
+        # Commit any other pending drags first, so deleting one box doesn't
+        # silently discard unrelated in-progress edits on other boxes.
+        pending = self.timeline_panel.get_pending_edits()
+        if pending:
+            self._write_video_annotation_edits(pending)
+
+        self.db.delete_game_state_segment(segment_id)
         self.load_game_state_segments()
 
     # ---------------------------------------------------------
