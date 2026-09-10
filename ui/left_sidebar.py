@@ -49,7 +49,7 @@ class LeftSideBar(QWidget):
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(340)
+        self.setFixedWidth(305)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

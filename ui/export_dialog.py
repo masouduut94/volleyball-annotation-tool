@@ -221,7 +221,6 @@ class YOLOExportDialog(QDialog):
         # ======================================================
 
         top_group = QGroupBox()
-
         top_layout = QHBoxLayout(top_group)
 
         # ------------------------------------------------------
@@ -232,13 +231,10 @@ class YOLOExportDialog(QDialog):
 
         mode_layout = QVBoxLayout(mode_group)
         mode_tooltip = create_help_button(EXPORT_MODE_HELP)
-
         self.combined_radio = QRadioButton("Combined dataset")
         self.separate_radio = QRadioButton("Separate datasets")
         self.combined_radio.setChecked(True)
-
         self.combined_radio.toggled.connect(self._update_summary)
-
         mode_layout.addWidget(self.combined_radio)
         mode_layout.addWidget(self.separate_radio)
         mode_layout.addWidget(mode_tooltip)
@@ -254,13 +250,10 @@ class YOLOExportDialog(QDialog):
         self.segmentation_radio = QRadioButton("YOLO Segmentation (Polygons)")
         self.detection_radio.setChecked(True)
         format_tooltip = create_help_button(ANNOTATION_FORMAT_HELP)
-
         self.detection_radio.toggled.connect(self._update_summary)
-
         format_layout.addWidget(self.detection_radio)
         format_layout.addWidget(self.segmentation_radio)
         format_layout.addWidget(format_tooltip)
-
         top_layout.addWidget(mode_group, stretch=1)
         top_layout.addWidget(format_group, stretch=1)
         layout.addWidget(top_group)
@@ -409,36 +402,11 @@ class YOLOExportDialog(QDialog):
         layout.addLayout(output_layout)
 
         # ======================================================
-        # Summary (live preview of everything selected above)
-        # ======================================================
-
-        # summary_group = QGroupBox("Summary")
-        # summary_layout = QVBoxLayout(summary_group)
-        #
-        # summary_header = QHBoxLayout()
-        # summary_header.addStretch()
-        # summary_header.addWidget(create_help_button(SUMMARY_HELP))
-        # summary_layout.addLayout(summary_header)
-        #
-        # self.summary_text = QPlainTextEdit()
-        # self.summary_text.setReadOnly(True)
-        # self.summary_text.setFixedHeight(250)
-        #
-        # mono_font = QFont("Courier New")
-        # mono_font.setStyleHint(QFont.StyleHint.Monospace)
-        # self.summary_text.setFont(mono_font)
-        #
-        # summary_layout.addWidget(self.summary_text)
-        # layout.addWidget(summary_group)
-
-        # ======================================================
         # Buttons
         # ======================================================
 
         buttons = QHBoxLayout()
-
         buttons.addStretch()
-
         cancel_button = QPushButton("Cancel")
         cancel_button.clicked.connect(self.reject)
         export_button = QPushButton("Export")
@@ -481,7 +449,6 @@ class YOLOExportDialog(QDialog):
         column = 0
 
         for layer_name in selected_layers:
-
             layer = self.db.get_layer(layer_name)
 
             if layer is None:
@@ -489,27 +456,17 @@ class YOLOExportDialog(QDialog):
 
             # Layer title.
             title = QLabel(f"<b>{layer_name.capitalize()}</b>")
-
             self.labels_layout.addWidget(title, row, column)
 
             row += 1
 
             for label in layer.labels:
-
                 checkbox = QCheckBox(label.name)
-
                 checkbox.setChecked(True)
-
                 checkbox.setProperty("layer_name", layer_name)
-
                 checkbox.setProperty("label_name", label.name)
-
                 checkbox.stateChanged.connect(self._update_summary)
-
-                self.label_checkboxes[
-                    (layer_name, label.name)
-                ] = checkbox
-
+                self.label_checkboxes[(layer_name, label.name)] = checkbox
                 self.labels_layout.addWidget(checkbox, row, column)
 
                 row += 1
@@ -520,7 +477,6 @@ class YOLOExportDialog(QDialog):
                     column += 1
 
         self.labels_layout.setRowStretch(max(row, 0), 1)
-
         # Rebuilding replaces every label checkbox, so refresh the preview.
         self._update_summary()
 
@@ -534,7 +490,6 @@ class YOLOExportDialog(QDialog):
         media_items = self.db.get_all_media()
 
         for media in media_items:
-
             annotations = self.db.get_media_annotations(media.path)
 
             if not annotations:
@@ -563,12 +518,7 @@ class YOLOExportDialog(QDialog):
 
     def _choose_output_directory(self):
 
-        directory = (
-            QFileDialog.getExistingDirectory(
-                self,
-                "Select Output Directory",
-            )
-        )
+        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
 
         if directory:
             self.output_edit.setText(directory)
@@ -606,9 +556,7 @@ class YOLOExportDialog(QDialog):
             item = self.video_list.item(i)
 
             if item.checkState() == Qt.CheckState.Checked:
-                selected_videos.append(
-                    item.data(Qt.ItemDataRole.UserRole)
-                )
+                selected_videos.append(item.data(Qt.ItemDataRole.UserRole))
 
         output_dir = self.output_edit.text()
 
