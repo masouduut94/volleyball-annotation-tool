@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, joinedload, selectinload
 
 from .schema import (
@@ -514,6 +514,83 @@ class DatabaseManager:
                 .first()
             )
             return bool(review and review.confirmed)
+
+    def get_frame_layer_statuses(self, media_path: str, frame_number: Optional[int]) -> dict:
+        """
+        For every layer, resolve one of "none" | "ai" | "user" | "confirmed"
+        for the (media, frame) pair:
+          - "confirmed" wins outright if a human explicitly hit Confirm
+            (FrameReview.confirmed) for that layer/frame.
+          - Otherwise "ai" if any stored annotation there is AI-generated
+            (still needs review).
+          - Otherwise "user" if annotations exist and are all human-drawn.
+          - Otherwise "none".
+        """
+        with self.Session() as session:
+            layers = session.query(SQLALayer).all()
+            media = session.query(Media).filter(Media.path == media_path).first()
+
+            statuses = {}
+
+            if media is None:
+                for layer in layers:
+                    statuses[layer.name] = "none"
+                return statuses
+
+            for layer in layers:
+                review = (
+                    session.query(FrameReview)
+                    .filter(
+                        FrameReview.media_id == media.id,
+                        FrameReview.layer_id == layer.id,
+                        FrameReview.frame_number == frame_number,
+                    )
+                    .first()
+                )
+
+                if review and review.confirmed:
+                    statuses[layer.name] = "confirmed"
+                    continue
+
+                records = (
+                    session.query(SQLAAnnotation)
+                    .filter(
+                        SQLAAnnotation.media_id == media.id,
+                        SQLAAnnotation.layer_id == layer.id,
+                        SQLAAnnotation.frame_number == frame_number,
+                    )
+                    .all()
+                )
+
+                if not records:
+                    statuses[layer.name] = "none"
+                elif any(r.is_ai_generated for r in records):
+                    statuses[layer.name] = "ai"
+                else:
+                    statuses[layer.name] = "user"
+
+            return statuses
+
+    def get_annotation_counts(self) -> dict:
+        """
+        Returns {layer_name: {label_name: count}} across ALL media and
+        frames — used by the statistics dialog. Uses an outer join so
+        labels with zero annotations still show up with count 0.
+        """
+        with self.Session() as session:
+            rows = (
+                session.query(SQLALayer.name, LayerLabel.name, func.count(SQLAAnnotation.id))
+                .join(LayerLabel, LayerLabel.layer_id == SQLALayer.id)
+                .outerjoin(SQLAAnnotation, SQLAAnnotation.label_id == LayerLabel.id)
+                .group_by(SQLALayer.name, LayerLabel.name)
+                .all()
+            )
+
+            result = {}
+            for layer_name, label_name, count in rows:
+                result.setdefault(layer_name, {})[label_name] = count
+            return result
+
 
     @staticmethod
     def _reset_frame_review(session, media_id, layer_id, frame_number):

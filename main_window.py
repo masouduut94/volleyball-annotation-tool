@@ -24,11 +24,12 @@ from ui.top_toolbar import TopToolbar
 from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
 from ui.bottom_toolbar import BottomToolbar
-from ui.confirmation_bar import ConfirmationBar
 from ui.game_state_dialog import GameStateRangeDialog
 from ui.export_progress_dialog import ExportProgressDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.temporal_timeline import TemporalTimelinePanel
+from vb_gui.vb_annotator.ui.annotation_stats_dialog import AnnotationStatsDialog
+
 
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
@@ -92,6 +93,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
         QShortcut(QKeySequence("Shift+Delete"), self, activated=self.clear_current_frame_annotations)
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=self.open_batch_inference)
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, activated=self.open_annotation_stats)
 
         # Redo/Undo
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+1"), self, activated=self.cycle_layer)
         QShortcut(QKeySequence("Alt+2"), self, activated=self.cycle_frame_label)
         QShortcut(QKeySequence("Alt+3"), self, activated=self.cycle_video_label)
+
     # ---------------------------------------------------------
     # UI
     # ---------------------------------------------------------
@@ -151,18 +154,9 @@ class MainWindow(QMainWindow):
 
         # NEW — confirmation bar + view stacked vertically, so it always
         # sits directly above the "main frame" being edited.
-        self.confirmation_bar = ConfirmationBar()
-        self.confirmation_bar.confirmRequested.connect(self.confirm_current_frame)
-
-        view_container = QWidget()
-        view_layout = QVBoxLayout(view_container)
-        view_layout.setContentsMargins(0, 0, 0, 0)
-        view_layout.setSpacing(0)
-        view_layout.addWidget(self.confirmation_bar)
-        view_layout.addWidget(self.view, 1)
 
         content_layout.addWidget(self.left_toolbar, 0)
-        content_layout.addWidget(view_container, 1)  # was: self.view directly
+        content_layout.addWidget(self.view, 1)
         content_layout.addWidget(self.right_sidebar, 0)
 
         main_layout.addLayout(content_layout, 1)
@@ -192,8 +186,17 @@ class MainWindow(QMainWindow):
         self.right_sidebar.configureJobRequested.connect(self.open_batch_inference)
         self.right_sidebar.setPathRequested.connect(self.set_model_path)
         self.right_sidebar.gameStateDetectRequested.connect(self.open_game_state_dialog)
+        self.right_sidebar.confirmLayerRequested.connect(self.confirm_layer_frame)
 
         return self.right_sidebar
+
+    def confirm_layer_frame(self, layer_name):
+        path, media_type, frame = self.current_media_info()
+        if path is None:
+            return
+        layer = self.db.get_layer(layer_name)
+        self.db.confirm_frame(path, layer.layer_id, frame)
+        self.refresh_frame_confirmation_indicator()
 
     def refresh_ai_sidebar(self):
         if not hasattr(self, "right_sidebar"):
@@ -618,6 +621,10 @@ class MainWindow(QMainWindow):
                 "class names match the labels defined for the active layer.",
             )
 
+    def open_annotation_stats(self):
+        dialog = AnnotationStatsDialog(self.db, self)
+        dialog.exec()
+
     def confirm_current_frame(self):
         path, media_type, frame = self.current_media_info()
         if path is None:
@@ -629,13 +636,11 @@ class MainWindow(QMainWindow):
     def refresh_frame_confirmation_indicator(self):
         path, media_type, frame = self.current_media_info()
         if path is None:
-            self.confirmation_bar.set_confirmed(False, "", "")
+            self.right_sidebar.set_annotation_statuses({})
             return
 
-        layer = self.db.get_layer(self.current_layer)
-        confirmed = self.db.is_frame_confirmed(path, layer.layer_id, frame)
-        frame_label = f"Frame {frame}" if frame is not None else "Image"
-        self.confirmation_bar.set_confirmed(confirmed, self.current_layer, frame_label)
+        statuses = self.db.get_frame_layer_statuses(path, frame)
+        self.right_sidebar.set_annotation_statuses(statuses)
 
     def run_batch_inference_on_frame(self, frame_number, model_keys):
         imported_total = 0
