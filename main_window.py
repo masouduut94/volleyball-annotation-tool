@@ -18,6 +18,7 @@ from services.game_state_worker import GameStateWorker
 from services.yolo_export_worker import YOLOExportWorker
 from services.batch_inference import BatchInferenceDialog
 from services.game_state_classifier import GameStateClassifier
+from services.videomae_export_worker import VideoMAEExportWorker
 
 from ui.utils import information_box
 from ui.top_toolbar import TopToolbar
@@ -25,11 +26,11 @@ from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
 from ui.bottom_toolbar import BottomToolbar
 from ui.game_state_dialog import GameStateRangeDialog
-from ui.export_progress_dialog import ExportProgressDialog
-from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.temporal_timeline import TemporalTimelinePanel
-from vb_gui.vb_annotator.ui.annotation_stats_dialog import AnnotationStatsDialog
-
+from ui.videomae_export_dialog import VideoMAEExportDialog
+from ui.export_progress_dialog import ExportProgressDialog
+from ui.annotation_stats_dialog import AnnotationStatsDialog
+from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
@@ -893,6 +894,58 @@ class MainWindow(QMainWindow):
 
         self.game_state_progress_dialog.show()
         self.game_state_thread.start()
+
+    def export_videomae(self):
+        dialog = VideoMAEExportDialog(self.db, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        settings = dialog.get_settings()
+        if not settings:
+            return
+
+        self._videomae_export_settings = settings
+        self.videomae_export_progress_dialog = ExportProgressDialog(self)
+        self.videomae_export_thread = QThread(self)
+        self.videomae_export_worker = VideoMAEExportWorker(self.db, settings)
+        self.videomae_export_worker.moveToThread(self.videomae_export_thread)
+
+        self.videomae_export_thread.started.connect(self.videomae_export_worker.run)
+        self.videomae_export_worker.progress.connect(self.videomae_export_progress_dialog.set_progress)
+        self.videomae_export_progress_dialog.cancel_button.clicked.connect(self.videomae_export_worker.cancel)
+        self.videomae_export_worker.finished.connect(self._videomae_export_finished)
+        self.videomae_export_worker.cancelled.connect(self._videomae_export_cancelled)
+        self.videomae_export_worker.error.connect(self._videomae_export_error)
+
+        self.videomae_export_worker.finished.connect(self.videomae_export_thread.quit)
+        self.videomae_export_worker.cancelled.connect(self.videomae_export_thread.quit)
+        self.videomae_export_worker.error.connect(self.videomae_export_thread.quit)
+        self.videomae_export_thread.finished.connect(self.videomae_export_worker.deleteLater)
+        self.videomae_export_thread.finished.connect(self.videomae_export_thread.deleteLater)
+
+        self.videomae_export_progress_dialog.show()
+        self.videomae_export_thread.start()
+
+    def _videomae_export_finished(self, stats):
+        self.videomae_export_progress_dialog.set_finished()
+        self.videomae_export_progress_dialog.close()
+        QMessageBox.information(
+            self, "Export Complete",
+            f"VideoMAE dataset exported successfully.\n\n"
+            f"Service clips: {stats['service']}\n"
+            f"In-Play clips: {stats['play']}\n"
+            f"No-Play clips: {stats['no-play']}\n"
+            f"Total clips (incl. augmented copies): {stats['total']}",
+        )
+
+    def _videomae_export_cancelled(self):
+        self.videomae_export_progress_dialog.set_cancelled()
+        self.videomae_export_progress_dialog.close()
+
+    def _videomae_export_error(self, message):
+        self.videomae_export_progress_dialog.close()
+        QMessageBox.critical(self, "Export Failed", f"Could not export VideoMAE dataset:\n\n{message}")
+
 
     def _game_state_finished(self, count):
         self.game_state_progress_dialog.set_finished()
