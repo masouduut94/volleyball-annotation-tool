@@ -20,6 +20,7 @@ since a range isn't "real" until both ends exist. This widget only
 visualizes committed segments (plus a live pending-create rectangle) and
 lets you edit/delete what's already been saved.
 """
+import math
 
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
@@ -134,8 +135,19 @@ class TimelineCanvas(QWidget):
         return LABEL_COL_WIDTH + frame * self.pixels_per_frame
 
     def _x_to_frame(self, x):
-        frame = (x - LABEL_COL_WIDTH) / self.pixels_per_frame
-        return max(0, min(self.max_frame, int(round(frame))))
+        """
+        Inverse of _frame_to_x. floor() is the mathematically correct
+        inverse for a left-edge-anchored, half-open pixel interval, but
+        pixels_per_frame (zoom_slider_value / 10.0) isn't always exactly
+        representable in binary floating point — e.g. 1.3 — so
+        frame_to_x(5) can compute to 4.999999999999999 instead of 5.0,
+        and a bare floor() would then round DOWN to frame 4. The epsilon
+        absorbs that representation error without meaningfully affecting
+        real fractional positions (it's ~1000x smaller than one pixel).
+        """
+        raw = (x - LABEL_COL_WIDTH) / self.pixels_per_frame
+        frame = math.floor(raw + 1e-6)
+        return max(0, min(self.max_frame, frame))
 
     def _row_rect(self, index):
         top = RULER_HEIGHT + index * ROW_HEIGHT

@@ -19,6 +19,7 @@ from services.yolo_export_worker import YOLOExportWorker
 from services.batch_inference import BatchInferenceDialog
 from services.game_state_classifier import GameStateClassifier
 from services.videomae_export_worker import VideoMAEExportWorker
+from services.job_runner import run_background_job
 
 from ui.utils import information_box
 from ui.top_toolbar import TopToolbar
@@ -31,6 +32,7 @@ from ui.videomae_export_dialog import VideoMAEExportDialog
 from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
+from vb_gui.vb_annotator.ui.undo_manager import DeleteAnnotationCommand
 
 
 class MainWindow(QMainWindow):
@@ -577,12 +579,26 @@ class MainWindow(QMainWindow):
 
     def clear_current_frame_annotations(self):
         path, media_type, frame = self.current_media_info()
-        layer = self.db.get_layer(self.current_layer)
         if path is None:
             return
 
-        self.scene.clear_annotations(self.current_layer)
-        self.db.delete_annotations(media_path=path, layer_id=layer.layer_id, frame_number=frame)
+        layer = self.db.get_layer(self.current_layer)
+        records = list(self.scene.layer_items.get(self.current_layer, []))
+
+        if not records:
+            return
+
+        self.scene.undo_stack.beginMacro(f"Clear {self.current_layer} (frame)")
+        for record in records:
+            cmd = DeleteAnnotationCommand(
+                self.scene, record, self.current_layer,
+                path, media_type, self.original_width, self.original_height,
+                frame, layer,
+            )
+            self.scene.undo_stack.push(cmd)
+        self.scene.undo_stack.endMacro()
+
+        self.scene.hovered_item = None  # any of the deleted items may have been hovered
         self.refresh_frame_confirmation_indicator()
 
     # ---------------------------------------------------------
@@ -660,7 +676,11 @@ class MainWindow(QMainWindow):
             if len(annotations) == 0:
                 continue
 
-            self.db.save_annotations(
+            # NEW — was save_annotations(), which ignores is_ai_generated/
+            # confirmed entirely and always writes rows using the column
+            # defaults (is_ai_generated=False, confirmed=True). That's why
+            # batch-inferred boxes showed up as "User" in the sidebar.
+            self.db.replace_ai_annotations(
                 media_path=path,
                 media_type=media_type,
                 width=self.original_width,
@@ -693,42 +713,27 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def convert_result_to_annotations(self, result, layer: Layer):
+        """
+        Converts one AutoAnnotator.predict() result into Annotation objects.
+
+        IMPORTANT: masks and boxes are NOT mutually exclusive on a YOLO
+        result — a segmentation checkpoint returns BOTH a box and a mask for
+        every detection. Looping over result.boxes and result.masks as two
+        separate `if` blocks (as this used to) emits two annotations per
+        real detection: one rectangle, one polygon. Using elif means a
+        segmentation result only ever produces the polygon, while
+        detection-only checkpoints (masks is None) still fall back to boxes.
+        """
         imported = 0
         annotations = []
         path, media_type, frame_number = self.current_media_info()
         labels = {label.name: label for label in layer.labels}
-        # Detection
-        if result.boxes is not None:
-            for box in result.boxes:
 
-                cls = int(box.cls[0])
-                name = result.names[cls].lower()
-
-                if layer.name == 'players' and name == 'person':
-                    name = 'player'
-
-                if name not in labels:
-                    continue
-
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                annotations.append(
-                    Annotation(
-                        media_name=path, frame_number=frame_number,
-                        shape_type='rectangle', label=labels[name], layer=layer,
-                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
-                        is_ai_generated=True, confirmed=False
-                    )
-                )
-                imported += 1
-
-        # Segmentation
         if result.masks is not None:
             for mask, cls in zip(result.masks.xy, result.boxes.cls):
                 name = result.names[int(cls)].lower()
-
                 if layer.name == 'players' and name == 'person':
                     name = 'player'
-
                 if name not in labels:
                     continue
 
@@ -739,10 +744,33 @@ class MainWindow(QMainWindow):
                         shape_type='polygon',
                         label=labels[name],
                         layer=layer,
-                        geometry=[[float(x), float(y)] for x, y in mask]
+                        geometry=[[float(x), float(y)] for x, y in mask],
+                        is_ai_generated=True,  # NEW — was silently left at the dataclass default (False)
+                        confirmed=False,  # NEW — was silently left at the dataclass default (True)
                     )
                 )
                 imported += 1
+
+        elif result.boxes is not None:
+            for box in result.boxes:
+                cls = int(box.cls[0])
+                name = result.names[cls].lower()
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
+                if name not in labels:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                annotations.append(
+                    Annotation(
+                        media_name=path, frame_number=frame_number,
+                        shape_type='rectangle', label=labels[name], layer=layer,
+                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
+                        is_ai_generated=True, confirmed=False,
+                    )
+                )
+                imported += 1
+
         return annotations, imported
 
     # ------------------------------------------
@@ -761,44 +789,15 @@ class MainWindow(QMainWindow):
 
         self._export_settings = settings
         self.export_progress_dialog = ExportProgressDialog(self)
-        self.export_thread = QThread(self)
-        self.export_worker = YOLOExportWorker(self.db, settings)
-        self.export_worker.moveToThread(self.export_thread)
 
-        # ----------------------------------------------------------
-        # Signals
-        # ----------------------------------------------------------
-
-        self.export_thread.started.connect(self.export_worker.run)
-
-        self.export_worker.progress.connect(self.export_progress_dialog.set_progress)
-
-        self.export_progress_dialog.cancel_button.clicked.connect(self.export_worker.cancel)
-
-        self.export_worker.finished.connect(self._export_finished)
-
-        self.export_worker.cancelled.connect(self._export_cancelled)
-
-        self.export_worker.error.connect(self._export_error)
-
-        # Cleanup.
-        self.export_worker.finished.connect(self.export_thread.quit)
-
-        self.export_worker.cancelled.connect(self.export_thread.quit)
-
-        self.export_worker.error.connect(self.export_thread.quit)
-
-        self.export_thread.finished.connect(self.export_worker.deleteLater)
-
-        self.export_thread.finished.connect(self.export_thread.deleteLater)
-
-        # ----------------------------------------------------------
-        # Start
-        # ----------------------------------------------------------
-
-        self.export_progress_dialog.show()
-
-        self.export_thread.start()
+        self._export_job = run_background_job(
+            parent=self,
+            worker=YOLOExportWorker(self.db, settings),
+            progress_dialog=self.export_progress_dialog,
+            on_finished=self._export_finished,
+            on_cancelled=self._export_cancelled,
+            on_error=self._export_error,
+        )
 
     def _export_finished(self, stats):
 
@@ -888,8 +887,8 @@ class MainWindow(QMainWindow):
             error_text="Classification failed.",
         )
 
-        self.game_state_thread = QThread(self)
-        self.game_state_worker = GameStateWorker(
+        # self.game_state_thread = QThread(self)
+        worker = GameStateWorker(
             db=self.db,
             classifier=self.game_state_classifier,
             video_path=self.video_path,
@@ -900,27 +899,43 @@ class MainWindow(QMainWindow):
             end_frame=settings["end_frame"],
             window_size=settings["window_size"],
         )
-        self.game_state_worker.moveToThread(self.game_state_thread)
 
-        self.game_state_thread.started.connect(self.game_state_worker.run)
-        self.game_state_worker.progress.connect(
+        worker.progress.connect(
             lambda done, total: self.game_state_progress_dialog.set_progress(
                 int(done / max(total, 1) * 100), detail=f"window {done}/{total}"
             )
         )
-        self.game_state_progress_dialog.cancel_button.clicked.connect(self.game_state_worker.cancel)
-        self.game_state_worker.finished.connect(self._game_state_finished)
-        self.game_state_worker.cancelled.connect(self._game_state_cancelled)
-        self.game_state_worker.error.connect(self._game_state_error)
 
-        self.game_state_worker.finished.connect(self.game_state_thread.quit)
-        self.game_state_worker.cancelled.connect(self.game_state_thread.quit)
-        self.game_state_worker.error.connect(self.game_state_thread.quit)
-        self.game_state_thread.finished.connect(self.game_state_worker.deleteLater)
-        self.game_state_thread.finished.connect(self.game_state_thread.deleteLater)
+        # self.game_state_worker.moveToThread(self.game_state_thread)
+        #
+        # self.game_state_thread.started.connect(self.game_state_worker.run)
+        # self.game_state_worker.progress.connect(
+        #     lambda done, total: self.game_state_progress_dialog.set_progress(
+        #         int(done / max(total, 1) * 100), detail=f"window {done}/{total}"
+        #     )
+        # )
+        # self.game_state_progress_dialog.cancel_button.clicked.connect(self.game_state_worker.cancel)
+        # self.game_state_worker.finished.connect(self._game_state_finished)
+        # self.game_state_worker.cancelled.connect(self._game_state_cancelled)
+        # self.game_state_worker.error.connect(self._game_state_error)
+        #
+        # self.game_state_worker.finished.connect(self.game_state_thread.quit)
+        # self.game_state_worker.cancelled.connect(self.game_state_thread.quit)
+        # self.game_state_worker.error.connect(self.game_state_thread.quit)
+        # self.game_state_thread.finished.connect(self.game_state_worker.deleteLater)
+        # self.game_state_thread.finished.connect(self.game_state_thread.deleteLater)
 
-        self.game_state_progress_dialog.show()
-        self.game_state_thread.start()
+        # self.game_state_progress_dialog.show()
+        # self.game_state_thread.start()
+        self._game_state_job = run_background_job(
+            parent=self,
+            worker=worker,
+            progress_dialog=self.game_state_progress_dialog,
+            on_finished=self._game_state_finished,
+            on_cancelled=self._game_state_cancelled,
+            on_error=self._game_state_error,
+            connect_progress=False,
+        )
 
     def export_videomae(self):
         dialog = VideoMAEExportDialog(self.db, self)
@@ -933,25 +948,15 @@ class MainWindow(QMainWindow):
 
         self._videomae_export_settings = settings
         self.videomae_export_progress_dialog = ExportProgressDialog(self)
-        self.videomae_export_thread = QThread(self)
-        self.videomae_export_worker = VideoMAEExportWorker(self.db, settings)
-        self.videomae_export_worker.moveToThread(self.videomae_export_thread)
 
-        self.videomae_export_thread.started.connect(self.videomae_export_worker.run)
-        self.videomae_export_worker.progress.connect(self.videomae_export_progress_dialog.set_progress)
-        self.videomae_export_progress_dialog.cancel_button.clicked.connect(self.videomae_export_worker.cancel)
-        self.videomae_export_worker.finished.connect(self._videomae_export_finished)
-        self.videomae_export_worker.cancelled.connect(self._videomae_export_cancelled)
-        self.videomae_export_worker.error.connect(self._videomae_export_error)
-
-        self.videomae_export_worker.finished.connect(self.videomae_export_thread.quit)
-        self.videomae_export_worker.cancelled.connect(self.videomae_export_thread.quit)
-        self.videomae_export_worker.error.connect(self.videomae_export_thread.quit)
-        self.videomae_export_thread.finished.connect(self.videomae_export_worker.deleteLater)
-        self.videomae_export_thread.finished.connect(self.videomae_export_thread.deleteLater)
-
-        self.videomae_export_progress_dialog.show()
-        self.videomae_export_thread.start()
+        self._videomae_export_job = run_background_job(
+            parent=self,
+            worker=VideoMAEExportWorker(self.db, settings),
+            progress_dialog=self.videomae_export_progress_dialog,
+            on_finished=self._videomae_export_finished,
+            on_cancelled=self._videomae_export_cancelled,
+            on_error=self._videomae_export_error,
+        )
 
     def _videomae_export_finished(self, stats):
         self.videomae_export_progress_dialog.set_finished()

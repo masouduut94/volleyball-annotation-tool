@@ -900,3 +900,61 @@ class DatabaseManager:
                 session.delete(seg)
 
         session.flush()
+
+    def replace_ai_annotations(
+            self,
+            media_path: str,
+            media_type: str,
+            width: int,
+            height: int,
+            layer: Layer,
+            frame_number: Optional[int],
+            annotations: List[Annotation],
+    ) -> List[int]:
+        """
+        Used by batch inference. Deletes only the UNCONFIRMED rows
+        currently stored for this (media, layer, frame), then inserts the
+        fresh batch as is_ai_generated=True, confirmed=False.
+
+        Deleting unconfirmed rows first prevents re-running a batch job
+        over the same range from piling up duplicate, un-reviewed
+        detections on top of the previous run's guesses. Rows a human has
+        already confirmed are left completely untouched — batch inference
+        should refresh what hasn't been reviewed yet, never silently
+        erase reviewed work.
+        """
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                media = Media(path=media_path, media_type=media_type, width=width, height=height)
+                session.add(media)
+                session.commit()
+                session.refresh(media)
+
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.media_id == media.id,
+                SQLAAnnotation.layer_id == layer.layer_id,
+                SQLAAnnotation.frame_number == frame_number,
+                SQLAAnnotation.confirmed == False,  # noqa: E712 — SQLAlchemy requires `== False`
+            ).delete(synchronize_session=False)
+
+            ids = []
+            for ann in annotations:
+                record = SQLAAnnotation(
+                    media_id=media.id,
+                    layer_id=layer.layer_id,
+                    label_id=ann.label.label_id,
+                    frame_number=frame_number,
+                    shape_type=ann.shape_type,
+                    geometry=json.dumps(ann.geometry),
+                    is_ai_generated=True,
+                    confirmed=False,
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+                ids.append(record.id)
+
+            self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
+
+            return ids

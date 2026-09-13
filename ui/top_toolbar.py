@@ -15,7 +15,7 @@ class TopToolbar(QToolBar):
         self.open_video_action = QAction("Open Video", self)
         self.open_video_action.triggered.connect(self.main_window.open_video)
         self.clear_action = QAction("Clear", self)
-        self.clear_action.triggered.connect(self.main_window.scene.clear_annotations)
+        self.clear_action.triggered.connect(self.main_window.clear_current_frame_annotations)
         self.save_action = QAction("Save", self)
         self.save_action.triggered.connect(self.main_window.save_annotations)
 
