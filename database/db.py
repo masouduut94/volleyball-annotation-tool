@@ -691,11 +691,7 @@ class DatabaseManager:
                 session.commit()
                 session.refresh(media)
 
-            session.query(SQLAGameStateSegment).filter(
-                SQLAGameStateSegment.media_id == media.id,
-                SQLAGameStateSegment.start_frame >= start_frame,
-                SQLAGameStateSegment.end_frame <= end_frame,
-            ).delete(synchronize_session=False)
+            self._trim_segments_for_range(session, media.id, start_frame, end_frame)
 
             for seg in segments:
                 session.add(SQLAGameStateSegment(
@@ -704,7 +700,7 @@ class DatabaseManager:
                     end_frame=seg.end_frame,
                     state=seg.state,
                     confidence=seg.confidence,
-                    source=getattr(seg, "source", "model"),  # NEW
+                    source=getattr(seg, "source", "model"),
                 ))
 
             session.commit()
@@ -831,3 +827,76 @@ class DatabaseManager:
                 SQLAGameStateSegment.id == segment_id
             ).delete(synchronize_session=False)
             session.commit()
+
+    def get_segments_overlapping_range(
+            self, media_path: str, start_frame: int, end_frame: int,
+    ) -> List[GameStateSegment]:
+        """Every segment whose range intersects [start_frame, end_frame] at
+        all — partial or full overlap — used to warn the user before an AI
+        classification run would overwrite existing data in that range."""
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return []
+
+            records = (
+                session.query(SQLAGameStateSegment)
+                .filter(
+                    SQLAGameStateSegment.media_id == media.id,
+                    SQLAGameStateSegment.start_frame <= end_frame,
+                    SQLAGameStateSegment.end_frame >= start_frame,
+                )
+                .order_by(SQLAGameStateSegment.start_frame)
+                .all()
+            )
+
+            return [
+                GameStateSegment(
+                    segment_id=r.id, media_name=media_path,
+                    start_frame=r.start_frame, end_frame=r.end_frame,
+                    state=r.state, confidence=r.confidence, source=r.source,
+                )
+                for r in records
+            ]
+
+    @staticmethod
+    def _trim_segments_for_range(session, media_id, start_frame, end_frame):
+        """
+        Remove/trim every existing segment that overlaps [start_frame,
+        end_frame] so a fresh write into that range never leaves stale or
+        duplicate coverage behind:
+          - fully inside the range           -> deleted
+          - overlaps only one edge           -> trimmed to sit outside the range
+          - fully spans the range on both sides -> split into a left and
+            a right remainder, with the middle (the overwritten part) gone
+        """
+        overlapping = (
+            session.query(SQLAGameStateSegment)
+            .filter(
+                SQLAGameStateSegment.media_id == media_id,
+                SQLAGameStateSegment.start_frame <= end_frame,
+                SQLAGameStateSegment.end_frame >= start_frame,
+            )
+            .all()
+        )
+
+        for seg in overlapping:
+            starts_before = seg.start_frame < start_frame
+            ends_after = seg.end_frame > end_frame
+
+            if starts_before and ends_after:
+                right_start = end_frame + 1
+                right_end = seg.end_frame
+                seg.end_frame = start_frame - 1
+                session.add(SQLAGameStateSegment(
+                    media_id=media_id, start_frame=right_start, end_frame=right_end,
+                    state=seg.state, confidence=seg.confidence, source=seg.source,
+                ))
+            elif starts_before:
+                seg.end_frame = start_frame - 1
+            elif ends_after:
+                seg.start_frame = end_frame + 1
+            else:
+                session.delete(seg)
+
+        session.flush()

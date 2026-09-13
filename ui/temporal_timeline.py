@@ -24,7 +24,7 @@ lets you edit/delete what's already been saved.
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                             QPushButton, QToolButton, QScrollArea, QSlider)
+                             QPushButton, QToolButton, QScrollArea, QSlider, QCheckBox)
 
 STATE_COLORS = {
     "service": "#FF7A29",
@@ -37,16 +37,16 @@ LABEL_DISPLAY = {"service": "Service", "play": "In-Play", "no-play": "No-Play"}
 
 EDGE_PX = 6
 ROW_HEIGHT = 34
-RULER_HEIGHT = 22          # top ruler: frame-number ticks
-TIME_RULER_HEIGHT = 20     # bottom ruler: mm:ss ticks
-BOTTOM_PADDING = 10        # breathing room below the time ruler
+RULER_HEIGHT = 22  # top ruler: frame-number ticks
+TIME_RULER_HEIGHT = 20  # bottom ruler: mm:ss ticks
+BOTTOM_PADDING = 10  # breathing room below the time ruler
 LABEL_COL_WIDTH = 74
 
 
 class TimelineCanvas(QWidget):
     seekRequested = pyqtSignal(int)
-    pendingEditsChanged = pyqtSignal(bool)   # True if any box has an uncommitted drag
-    intervalSelected = pyqtSignal(object)    # GameStateSegment-like or None
+    pendingEditsChanged = pyqtSignal(bool)  # True if any box has an uncommitted drag
+    intervalSelected = pyqtSignal(object)  # GameStateSegment-like or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,10 +59,10 @@ class TimelineCanvas(QWidget):
         self.pending_marker = None  # (frame, state) or None — live create-in-progress
         self.selected_segment_id = None
 
-        self._clean_by_id = {}      # segment_id -> (start, end) as last loaded from DB
-        self._pending_edits = {}    # segment_id -> (start, end) currently dirty
+        self._clean_by_id = {}  # segment_id -> (start, end) as last loaded from DB
+        self._pending_edits = {}  # segment_id -> (start, end) currently dirty
 
-        self._drag_mode = None      # None | "seek" | "move" | "resize_start" | "resize_end"
+        self._drag_mode = None  # None | "seek" | "move" | "resize_start" | "resize_end"
         self._drag_segment = None
         self._drag_anchor_frame = 0
         self._drag_orig_start = 0
@@ -209,7 +209,7 @@ class TimelineCanvas(QWidget):
             x = self._frame_to_x(f)
             painter.drawLine(QPointF(x, RULER_HEIGHT - 6), QPointF(x, RULER_HEIGHT))
             painter.drawText(QRectF(x - 30, 0, 60, RULER_HEIGHT - 6),
-                              Qt.AlignmentFlag.AlignCenter, str(f))
+                             Qt.AlignmentFlag.AlignCenter, str(f))
             f += step
 
         # ---- Segments ----
@@ -405,8 +405,9 @@ class TemporalTimelinePanel(QWidget):
     """Collapsible container: header (toggle + zoom + apply/cancel/delete) + scrollable canvas."""
 
     seekRequested = pyqtSignal(int)
-    applyChangesRequested = pyqtSignal(dict)     # segment_id -> (start, end)
-    intervalDeleteRequested = pyqtSignal(int)    # segment_id
+    applyChangesRequested = pyqtSignal(dict)  # segment_id -> (start, end)
+    intervalDeleteRequested = pyqtSignal(int)  # segment_id
+    clearAllRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -437,11 +438,17 @@ class TemporalTimelinePanel(QWidget):
 
         h_layout.addWidget(QLabel("Zoom"))
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setRange(1, 60)   # pixels-per-frame * 10
+        self.zoom_slider.setRange(1, 60)  # pixels-per-frame * 10
         self.zoom_slider.setValue(20)
         self.zoom_slider.setFixedWidth(120)
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
         h_layout.addWidget(self.zoom_slider)
+
+        self.follow_checkbox = QCheckBox("Follow Playhead")
+        self.follow_checkbox.setChecked(True)
+        h_layout.addWidget(self.follow_checkbox)
+
+        self.apply_btn = QPushButton("Apply Changes")
 
         self.apply_btn = QPushButton("Apply Changes")
         self.apply_btn.setVisible(False)
@@ -457,6 +464,12 @@ class TemporalTimelinePanel(QWidget):
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         h_layout.addWidget(self.delete_btn)
+
+        self.clear_all_btn = QPushButton("Clear All")
+        self.clear_all_btn.setObjectName("dangerButton")
+        self.clear_all_btn.setEnabled(False)
+        self.clear_all_btn.clicked.connect(self.clearAllRequested.emit)
+        h_layout.addWidget(self.clear_all_btn)
 
         outer.addWidget(header)
 
@@ -515,16 +528,44 @@ class TemporalTimelinePanel(QWidget):
             self._selected_segment = None
             self.delete_btn.setEnabled(False)
 
+    def _autoscroll_to_playhead(self, frame):
+        """
+        Keep the playhead visible the way a video editor's "follow
+        playhead" does: the view holds still while the playhead moves
+        within the current page, then jumps exactly one page-width
+        forward or back the instant the playhead crosses the visible
+        edge — rather than smoothly scrolling every frame, which would
+        make the timeline feel like it's crawling under the cursor.
+        """
+        if not self.follow_checkbox.isChecked():
+            return
+
+        viewport_width = self.scroll_area.viewport().width()
+        if viewport_width <= 0:
+            return
+
+        x = self.canvas._frame_to_x(frame)
+        scrollbar = self.scroll_area.horizontalScrollBar()
+        visible_start = scrollbar.value()
+        visible_end = visible_start + viewport_width
+
+        if x < visible_start or x > visible_end:
+            page_index = int(x // viewport_width)
+            target = max(0, min(page_index * viewport_width, scrollbar.maximum()))
+            scrollbar.setValue(target)
+
     # ---------------- Public API ----------------
 
     def set_segments(self, segments):
         self.canvas.set_segments(segments)
+        self.clear_all_btn.setEnabled(bool(segments))
 
     def set_max_frame(self, max_frame):
         self.canvas.set_max_frame(max_frame)
 
     def set_current_frame(self, frame):
         self.canvas.set_current_frame(frame)
+        self._autoscroll_to_playhead(frame)
 
     def set_fps(self, fps):
         self.canvas.set_fps(fps)

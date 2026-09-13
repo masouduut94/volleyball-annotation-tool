@@ -32,6 +32,7 @@ from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 
+
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
         super().__init__()
@@ -137,6 +138,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.seekRequested.connect(self.goto_frame)
         self.timeline_panel.applyChangesRequested.connect(self.on_timeline_apply_clicked)
         self.timeline_panel.intervalDeleteRequested.connect(self.on_timeline_interval_delete_requested)
+        self.timeline_panel.clearAllRequested.connect(self.on_timeline_clear_all_requested)
         self.timeline_panel.setVisible(False)
 
         self.right_sidebar = self._create_right_sidebar()
@@ -848,6 +850,31 @@ class MainWindow(QMainWindow):
 
         settings = dialog.get_settings()
 
+        # NEW — warn before an AI classification run would overwrite
+        # existing tagged data anywhere in the requested range.
+        overlapping = self.db.get_segments_overlapping_range(
+            self.video_path, settings["start_frame"], settings["end_frame"],
+        )
+        if overlapping:
+            covered_frames = sum(
+                min(seg.end_frame, settings["end_frame"])
+                - max(seg.start_frame, settings["start_frame"]) + 1
+                for seg in overlapping
+            )
+            reply = QMessageBox.question(
+                self, "Existing Tags In Range",
+                f"{len(overlapping)} existing game-state segment(s), "
+                f"covering {covered_frames} frame(s), already exist within "
+                f"the selected range ({settings['start_frame']}"
+                f"–{settings['end_frame']}).\n\n"
+                f"Running classification here will overwrite that data. "
+                f"Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         self.game_state_progress_dialog = ExportProgressDialog(
             self,
             window_title="Classifying Game State",
@@ -945,7 +972,6 @@ class MainWindow(QMainWindow):
     def _videomae_export_error(self, message):
         self.videomae_export_progress_dialog.close()
         QMessageBox.critical(self, "Export Failed", f"Could not export VideoMAE dataset:\n\n{message}")
-
 
     def _game_state_finished(self, count):
         self.game_state_progress_dialog.set_finished()
@@ -1109,6 +1135,25 @@ class MainWindow(QMainWindow):
             self._write_video_annotation_edits(pending)
 
         self.db.delete_game_state_segment(segment_id)
+        self.load_game_state_segments()
+
+    def on_timeline_clear_all_requested(self):
+        if self.video_path is None:
+            return
+
+        reply = QMessageBox.question(
+            self, "Clear All Video Annotations",
+            "This will permanently delete every game-state segment "
+            "(Service / In-Play / No-Play) tagged for this video — both "
+            "manually tagged and AI-generated. This cannot be undone.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.db.clear_game_state_segments(self.video_path)
         self.load_game_state_segments()
 
     # ---------------------------------------------------------
