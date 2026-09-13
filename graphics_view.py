@@ -15,6 +15,12 @@ class GraphicsView(QGraphicsView):
         self.max_scale = 20.0
         self.current_scale = 1.0
 
+        # NEW — explicit mode flag instead of comparing current_scale to
+        # 1.0. True means "keep the image fit to the viewport" (CVAT's
+        # default behavior); False means "the user manually zoomed, leave
+        # their zoom level alone on resize".
+        self._auto_fit = True
+
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
@@ -49,6 +55,13 @@ class GraphicsView(QGraphicsView):
     # ---------------------------------------------------------
 
     def fit_image(self):
+        """
+        Scale the scene (always a fixed 960x540 canvas, regardless of the
+        source media's real resolution) to fill the viewport as much as
+        possible WITHOUT distorting its aspect ratio — KeepAspectRatio
+        letterboxes instead of stretching, same as CVAT's canvas resize.
+        Entering this method always (re-)enters auto-fit mode.
+        """
         if self.scene() is None:
             return
 
@@ -56,6 +69,8 @@ class GraphicsView(QGraphicsView):
 
         if rect.isEmpty():
             return
+
+        self._auto_fit = True  # NEW
 
         self.resetTransform()
 
@@ -87,6 +102,11 @@ class GraphicsView(QGraphicsView):
 
         if new_scale > self.max_scale:
             return
+
+        # NEW — any manual zoom exits auto-fit mode, so a subsequent
+        # window resize doesn't silently snap back to "fit" and discard
+        # the zoom level the user just set.
+        self._auto_fit = False
 
         self.scale(factor, factor)
         self.current_scale = new_scale
@@ -200,7 +220,16 @@ class GraphicsView(QGraphicsView):
     # ---------------------------------------------------------
 
     def resizeEvent(self, event):
+        """
+        Re-fit the canvas to the new viewport size WHILE the view is in
+        auto-fit mode, so dragging the window edge (or a sidebar
+        collapsing/expanding) continuously rescales the image without
+        distortion — like CVAT. Once the user has manually zoomed
+        (apply_zoom sets _auto_fit=False), resizing intentionally leaves
+        the zoom level alone: Qt just reveals more/less of the scene,
+        which is the expected "I zoomed in on purpose" behavior.
+        """
         super().resizeEvent(event)
 
-        if self.current_scale == 1.0:
+        if self._auto_fit:
             self.fit_image()

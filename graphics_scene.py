@@ -10,9 +10,9 @@ from __future__ import annotations
 from typing import List, Optional, Dict
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence
+from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence, QTransform
 from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem,
-                             QGraphicsEllipseItem, QMenu, QMessageBox)
+                             QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
 from ui.undo_manager import (
@@ -58,6 +58,9 @@ class AnnotationScene(QGraphicsScene):
     annotation_changed = pyqtSignal()
     tool_mode_changed = pyqtSignal(str)
 
+    BOOST_Z = 1_000_000  # far above any real layer zValue (0–30)
+    CLICK_CYCLE_TOLERANCE_PX = 4  # viewport pixels — "same spot" for cycling
+
     def __init__(self, db: DatabaseManager, parent=None):
         """
         Initialize the annotation scene.
@@ -75,6 +78,18 @@ class AnnotationScene(QGraphicsScene):
         # Polygon drawing state
         self.guide_line = None  # Temporary line showing current polygon edge
         self.hovered_item = None  # Currently hovered annotation item
+
+        # ---------------------------------------------------------
+        # Area-ranked selection (CVAT-style overlap handling)
+        # ---------------------------------------------------------
+        self._active_top_item = None  # whichever item is currently z-boosted
+        self._active_top_item_base_z = 0.0  # its zValue before boosting, to restore
+        self._stack_badge = None  # lazily-created "N overlapping" indicator
+        self._stack_badge_text = None
+        self._last_click_viewport_pos = None
+        self._click_cycle_index = 0
+
+        self.selectionChanged.connect(self._on_selection_changed)
 
         # Current tool mode (rectangle or polygon)
         self.tool_mode = ToolMode.RECTANGLE
@@ -151,29 +166,22 @@ class AnnotationScene(QGraphicsScene):
         self.current_layer = layer_name
 
     def set_image(self, pixmap):
-        """
-        Display a new image in the scene and clear all existing annotations.
-
-        Args:
-            pixmap: QPixmap object to display as the background
-        """
-        # Clear the scene and reset layer storage
         self.clear()
         for key, _ in self.layer_items.items():
             self.layer_items[key].clear()
 
-        # Cancel any ongoing polygon drawing
         self.cancel_polygon()
+        self.undo_stack.clear()
+        self._active_top_item = None
+        self._active_top_item_base_z = 0.0
+        self._stack_badge = None
+        self._stack_badge_text = None
+        self._last_click_viewport_pos = None
+        self._click_cycle_index = 0
 
-        self.undo_stack.clear()  # NEW — items behind old commands no longer exist
-
-        # Notify of change
         self.annotation_changed.emit()
-        # Display the image
         self.image_item = self.addPixmap(pixmap)
-        self.image_item.setZValue(-100)  # Ensure image is behind all annotations
-
-        # Update scene rectangle to match image size
+        self.image_item.setZValue(-100)
         self.setSceneRect(QRectF(pixmap.rect()))
 
     def set_image_scale(self, original_width: int, original_height: int):
@@ -223,86 +231,70 @@ class AnnotationScene(QGraphicsScene):
         Handle mouse press events for drawing and interaction.
 
         - Right click: Remove last polygon point during polygon drawing
-        - Left click on annotation: Let the item handle selection
+        - Left click on an existing annotation: resolve which one by
+          area-ranking (see _resolve_click_winner), boost it on top, and
+          let Qt's normal item flow handle selection/drag/resize
         - Left click on empty space: Start drawing based on current tool
         """
-        # Handle right-click to remove last polygon point
         if event.button() == Qt.MouseButton.RightButton:
             if self.tool_mode == ToolMode.POLYGON and self.polygon_points:
                 self.remove_last_polygon_point()
                 event.accept()
                 return
 
-        # If clicking on an existing annotation item, let the item handle it
-        clicked_item = self.itemAt(event.scenePos(), self.views()[0].transform())
-
-        if isinstance(clicked_item, (AnnotationRectItem, AnnotationPolygonItem)):
-            super().mousePressEvent(event)
-            return
-
-        # Handle left-click for starting new annotations
         if event.button() == Qt.MouseButton.LeftButton:
+            winner = self._resolve_click_winner(event.scenePos())
+
+            if winner is not None:
+                self._activate_top_item(winner)
+                self._hide_stack_badge()
+                super().mousePressEvent(event)
+                return
+
+            self._activate_top_item(None)
+
             if self.tool_mode == ToolMode.RECTANGLE:
                 self.start_rectangle(event.scenePos())
                 event.accept()
                 return
-
             elif self.tool_mode == ToolMode.POLYGON:
                 self.add_polygon_point(event.scenePos())
                 event.accept()
                 return
 
-        # Pass unhandled events to parent
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        """
-        Handle mouse movement for drawing and interaction.
-
-        - Rectangle: Update temporary rectangle size
-        - Polygon: Update guide line to show next edge
-        """
-        # Update temporary rectangle while drawing
         if self.temp_rect and self.start_pos:
-            rect = QRectF(
-                self.start_pos,
-                event.scenePos(),
-            ).normalized()
-
+            rect = QRectF(self.start_pos, event.scenePos()).normalized()
             self.temp_rect.setRect(rect)
             event.accept()
             return
 
-        # Update polygon guide line (shows the edge being drawn)
         if self.tool_mode == ToolMode.POLYGON and self.polygon_points:
             last = self.polygon_points[-1]
-
             if self.guide_line is None:
-                # Create guide line on first movement
-                pen = QPen(
-                    QColor(self.current_color),
-                    1,
-                    Qt.PenStyle.DashLine,
-                )
-
+                pen = QPen(QColor(self.current_color), 1, Qt.PenStyle.DashLine)
                 self.guide_line = self.addLine(
-                    last.x(),
-                    last.y(),
-                    event.scenePos().x(),
-                    event.scenePos().y(),
-                    pen,
+                    last.x(), last.y(), event.scenePos().x(), event.scenePos().y(), pen,
                 )
             else:
-                # Update existing guide line
                 self.guide_line.setLine(
-                    last.x(),
-                    last.y(),
-                    event.scenePos().x(),
-                    event.scenePos().y(),
+                    last.x(), last.y(), event.scenePos().x(), event.scenePos().y(),
                 )
-
             event.accept()
             return
+
+        # NEW — CVAT-style hover ranking, skipped while a button is held
+        # (i.e. mid-drag/mid-resize on whatever Qt already grabbed).
+        if event.buttons() == Qt.MouseButton.NoButton:
+            if self.selectedItems():
+                # A selection is active — keep it pinned on top instead of
+                # re-ranking by area (see _on_selection_changed).
+                self._hide_stack_badge()
+            else:
+                self._update_area_based_stacking(event.scenePos())
+                self._update_stack_badge(event.scenePos())
 
         super().mouseMoveEvent(event)
 
@@ -572,6 +564,154 @@ class AnnotationScene(QGraphicsScene):
             self.hovered_item = None
 
     # ---------------------------------------------------------
+    # Area-Ranked Selection (CVAT-style overlap handling)
+    # ---------------------------------------------------------
+    #
+    # Qt's own hit-testing (itemAt, mousePressEvent, hover dispatch) is
+    # always z-order based, so an overlapped small shape becomes
+    # unreachable once a bigger shape is drawn on top of it. CVAT solves
+    # this by ranking overlapping shapes by on-screen area and activating
+    # the smallest one — we replicate that here by temporarily boosting
+    # the winning item's zValue above its neighbors, then handing off to
+    # Qt's normal event flow. Every existing move/resize/vertex-edit code
+    # path in drawing_tools.py keeps working unmodified, because as far
+    # as Qt is concerned, the boosted item genuinely IS on top.
+
+    def _ranked_candidates_at(self, scene_pos: QPointF):
+        """
+        Every annotation item whose actual shape contains scene_pos,
+        ranked smallest-area first. Uses the same shape-based hit test as
+        itemAt (IntersectsItemShape), just returning every match instead
+        of only the topmost one.
+        """
+        view = self.views()[0] if self.views() else None
+        transform = view.transform() if view else QTransform()
+
+        candidates = [
+            it for it in self.items(
+                scene_pos, Qt.ItemSelectionMode.IntersectsItemShape,
+                Qt.SortOrder.DescendingOrder, transform,
+            )
+            if isinstance(it, (AnnotationRectItem, AnnotationPolygonItem))
+        ]
+
+        def _area(it):
+            r = it.sceneBoundingRect()
+            return max(r.width() * r.height(), 1.0)
+
+        candidates.sort(key=_area)
+        return candidates
+
+    def _activate_top_item(self, item):
+        """
+        Boost `item` above every overlapping sibling by zValue, restoring
+        whichever item was previously boosted. Idempotent — calling this
+        again with the same item (or None twice) is a no-op.
+        """
+        if item is self._active_top_item:
+            return
+
+        if self._active_top_item is not None:
+            self._active_top_item.setZValue(self._active_top_item_base_z)
+
+        self._active_top_item = item
+
+        if item is not None:
+            self._active_top_item_base_z = item.zValue()
+            item.setZValue(self.BOOST_Z)
+
+    def _update_area_based_stacking(self, scene_pos: QPointF):
+        """Pure hover ranking: always activates the smallest-area item
+        under the cursor. Only called while nothing is selected — once
+        something IS selected, it stays pinned on top instead (see
+        mouseMoveEvent / _on_selection_changed)."""
+        candidates = self._ranked_candidates_at(scene_pos)
+        self._activate_top_item(candidates[0] if candidates else None)
+
+    def _resolve_click_winner(self, scene_pos: QPointF):
+        """
+        Resolve which item a left-click should hit. Clicking fresh
+        somewhere always picks the smallest-area candidate (matches
+        hover). Clicking again at essentially the same screen position
+        advances to the next-largest candidate — this is what lets you
+        deliberately reach a bigger shape sitting underneath a small one,
+        rather than being stuck on the smallest match forever.
+        """
+        candidates = self._ranked_candidates_at(scene_pos)
+
+        if not candidates:
+            self._last_click_viewport_pos = None
+            self._click_cycle_index = 0
+            return None
+
+        view = self.views()[0] if self.views() else None
+        viewport_pos = view.mapFromScene(scene_pos) if view else None
+
+        same_spot = False
+        if viewport_pos is not None and self._last_click_viewport_pos is not None:
+            delta = viewport_pos - self._last_click_viewport_pos
+            same_spot = delta.manhattanLength() <= self.CLICK_CYCLE_TOLERANCE_PX
+
+        if same_spot:
+            self._click_cycle_index = (self._click_cycle_index + 1) % len(candidates)
+        else:
+            self._click_cycle_index = 0
+
+        self._last_click_viewport_pos = viewport_pos
+        return candidates[self._click_cycle_index]
+
+    def _on_selection_changed(self):
+        """Keep the selected item pinned on top for as long as it's
+        selected, regardless of what the cursor later hovers over — this
+        is what keeps a selected item's resize handles reliably clickable
+        even if the mouse wanders across a bigger overlapping sibling."""
+        selected = self.selectedItems()
+        if selected:
+            self._activate_top_item(selected[0])
+            self._hide_stack_badge()
+
+    # ---- Stack-depth badge (visual affordance for "there's more here") ----
+
+    def _ensure_stack_badge(self):
+        if self._stack_badge is not None:
+            return
+
+        badge = QGraphicsEllipseItem(0, 0, 18, 18)
+        badge.setBrush(QColor(0, 0, 0, 200))
+        badge.setPen(QPen(QColor('#FFD54A'), 1))
+        badge.setZValue(self.BOOST_Z + 10)
+        badge.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        badge.hide()
+        self.addItem(badge)
+
+        text = QGraphicsTextItem("", badge)
+        text.setDefaultTextColor(QColor('#FFD54A'))
+        font = text.font()
+        font.setBold(True)
+        font.setPointSize(8)
+        text.setFont(font)
+        text.setPos(4, 1)
+
+        self._stack_badge = badge
+        self._stack_badge_text = text
+
+    def _update_stack_badge(self, scene_pos: QPointF):
+        candidates = self._ranked_candidates_at(scene_pos)
+        if len(candidates) <= 1:
+            self._hide_stack_badge()
+            return
+
+        self._ensure_stack_badge()
+        self._stack_badge_text.setPlainText(str(len(candidates)))
+        self._stack_badge.setPos(scene_pos.x() + 10, scene_pos.y() - 24)
+        self._stack_badge.show()
+
+    def _hide_stack_badge(self):
+        if self._stack_badge is not None:
+            self._stack_badge.hide()
+
+
+    # ---------------------------------------------------------
     # Context Menu
     # ---------------------------------------------------------
 
@@ -582,6 +722,11 @@ class AnnotationScene(QGraphicsScene):
         The menu shows labels that belong to the same layer as the clicked annotation.
         """
         # Find the item at the click position
+        item = self._active_top_item or self._resolve_click_winner(event.scenePos())
+
+        if item is None:
+            return
+
         item = self.itemAt(
             event.scenePos(),
             self.views()[0].transform(),
