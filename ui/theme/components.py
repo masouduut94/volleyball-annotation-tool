@@ -13,6 +13,72 @@ from .colors import Colors
 from .typography import Typography
 
 
+def default_text(scope: str) -> str:
+    """
+    Baseline text color for otherwise-unstyled widgets in this scope
+    (plain QLabel, QCheckBox/QRadioButton, QToolButton).
+
+    Every other rule in this file targets a specific #objectName
+    (QLabel#title, QLabel#section, QLabel#headerTitle, QLabel#statusOk,
+    ...). Anything WITHOUT one — "Frame", "Zoom", "Object Detection",
+    every DetectionRow's plain name label, etc. — currently falls
+    through to Qt's native widget style entirely unstyled. On Windows
+    that resolves to the system palette's WindowText color (near-black),
+    unreadable against this app's dark backgrounds; other platforms'
+    native styles happened to default to something lighter, which is why
+    this only surfaced on Windows.
+
+    Declared as a TYPE selector (no #objectName) so it can never
+    override the more specific ID-selector rules elsewhere in this file
+    — in QSS, as in CSS, an ID selector always beats a type selector
+    regardless of declaration order, so this is safe to add anywhere.
+    """
+    return f"""
+    #{scope} QLabel {{
+        color: {Colors.TEXT_PRIMARY};
+        background: transparent;
+    }}
+
+    #{scope} QCheckBox, #{scope} QRadioButton {{
+        color: {Colors.TEXT_PRIMARY};
+    }}
+
+    #{scope} QToolButton {{
+        color: {Colors.TEXT_PRIMARY};
+    }}
+    """
+
+
+def top_toolbar(scope: str) -> str:
+    """Background, button, and label styling for the top toolbar,
+    including the Dark/Light theme switcher container."""
+    return f"""
+    QToolBar#{scope} {{
+        background: {Colors.BG_APP};
+        border-bottom: 1px solid {Colors.BORDER};
+        spacing: 4px;
+        padding: 4px 6px;
+    }}
+
+    QToolBar#{scope} QToolButton {{
+        color: {Colors.TEXT_PRIMARY};
+        background: transparent;
+        border-radius: 6px;
+        padding: 4px 8px;
+    }}
+
+    QToolBar#{scope} QToolButton:hover {{
+        background: {Colors.BG_HOVER};
+    }}
+
+    #{scope} QLabel {{
+        color: {Colors.TEXT_PRIMARY};
+        background: transparent;
+        font-size: {Typography.SIZE_MD};
+    }}
+    """
+
+
 def panel_base(scope: str) -> str:
     return f"""
     QWidget#{scope} {{
@@ -101,18 +167,19 @@ def label_button(scope: str) -> str:
         padding: 8px 10px;
         text-align: left;
         border-radius: 8px;
-        color: #D8DADF;
+        color: {Colors.TEXT_PRIMARY};
     }}
 
     #{scope} QPushButton#labelButton:hover {{
-        background: {Colors.BG_HOVER};
+        background: {Colors.ACCENT};
+        color: white;
     }}
 
     #{scope} QPushButton#activeLabel {{
         background: {Colors.BG_SURFACE};
         border: 1px solid {Colors.ACCENT};
         border-radius: 8px;
-        color: white;
+        color: {Colors.TEXT_BRIGHT};
         font-weight: {Typography.WEIGHT_BOLD_QSS};
     }}
     """
@@ -169,6 +236,7 @@ def icon_toolbutton(scope: str) -> str:
     }}
     """
 
+
 def navigation_button(scope: str = "bottomToolbar") -> str:
     return f"""
     QWidget#{scope} QPushButton#navigationButton {{
@@ -206,77 +274,6 @@ def surface_button(scope: str) -> str:
 
     #{scope} QPushButton:pressed {{
         background: {Colors.BG_SURFACE_PRESSED};
-    }}
-    """
-
-
-def slider(scope: str) -> str:
-    return f"""
-    #{scope} QSlider {{
-        min-width: 250px;
-        max-width: 500px;
-    }}
-
-    #{scope} QSlider::groove:horizontal {{
-        height: 5px;
-        background: #444;
-        border-radius: 2px;
-    }}
-
-    #{scope} QSlider::sub-page:horizontal {{
-        background: {Colors.ACCENT_BLUE};
-        border-radius: 2px;
-    }}
-
-    #{scope} QSlider::add-page:horizontal {{
-        background: #383838;
-        border-radius: 2px;
-    }}
-
-    #{scope} QSlider::handle:horizontal {{
-        width: 13px;
-        height: 13px;
-        margin: -4px 0;
-        background: #d0d0d0;
-        border: 1px solid #777;
-        border-radius: 6px;
-    }}
-
-    #{scope} QSlider::handle:horizontal:hover {{
-        background: #ffffff;
-        border-color: {Colors.ACCENT_BLUE};
-    }}
-    """
-
-
-def spinbox(scope: str) -> str:
-    return f"""
-    #{scope} QSpinBox {{
-        background-color: #3c3c3c;
-        color: #e0e0e0;
-        border: 1px solid #555;
-        border-radius: 4px;
-        padding: 4px 6px;
-        font-size: {Typography.SIZE_XS};
-        min-width: 20px;
-    }}
-
-    #{scope} QSpinBox:hover {{
-        border-color: #666;
-    }}
-
-    #{scope} QSpinBox:focus {{
-        border-color: {Colors.ACCENT_BLUE};
-    }}
-
-    #{scope} QSpinBox::up-button, #{scope} QSpinBox::down-button {{
-        background-color: #3c3c3c;
-        border: none;
-        width: 16px;
-    }}
-
-    #{scope} QSpinBox::up-button:hover, #{scope} QSpinBox::down-button:hover {{
-        background-color: #4a4a4a;
     }}
     """
 
@@ -383,5 +380,186 @@ def confirmation_bar(scope: str = "confirmationBar") -> str:
     #{scope} QPushButton#confirmButton:disabled {{
         background: {Colors.BG_SURFACE};
         color: {Colors.TEXT_DISABLED};
+    }}
+    """
+
+
+def slider(scope: str) -> str:
+    return f"""
+    #{scope} QSlider {{
+        min-width: 250px;
+        max-width: 500px;
+    }}
+
+    #{scope} QSlider::groove:horizontal {{
+        height: 5px;
+        background: {Colors.BORDER};
+        border-radius: 2px;
+    }}
+
+    #{scope} QSlider::sub-page:horizontal {{
+        background: {Colors.ACCENT_BLUE};
+        border-radius: 2px;
+    }}
+
+    #{scope} QSlider::add-page:horizontal {{
+        background: {Colors.BG_SURFACE};
+        border-radius: 2px;
+    }}
+
+    #{scope} QSlider::handle:horizontal {{
+        width: 13px;
+        height: 13px;
+        margin: -4px 0;
+        background: {Colors.TEXT_MUTED_ALT};
+        border: 1px solid {Colors.BORDER_HOVER};
+        border-radius: 6px;
+    }}
+
+    #{scope} QSlider::handle:horizontal:hover {{
+        background: #ffffff;
+        border-color: {Colors.ACCENT_BLUE};
+    }}
+    """
+
+
+def spinbox(scope: str) -> str:
+    return f"""
+    #{scope} QSpinBox {{
+        background-color: {Colors.BG_SURFACE};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {Colors.BORDER};
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: {Typography.SIZE_XS};
+        min-width: 20px;
+    }}
+
+    #{scope} QSpinBox:hover {{
+        border-color: {Colors.BORDER_HOVER};
+    }}
+
+    #{scope} QSpinBox:focus {{
+        border-color: {Colors.ACCENT_BLUE};
+    }}
+
+    #{scope} QSpinBox::up-button, #{scope} QSpinBox::down-button {{
+        background-color: {Colors.BG_SURFACE};
+        border: none;
+        width: 16px;
+    }}
+
+    #{scope} QSpinBox::up-button:hover, #{scope} QSpinBox::down-button:hover {{
+        background-color: {Colors.BG_SURFACE_HOVER};
+    }}
+    """
+
+
+def layer_row(scope):
+    return f"""
+    #{scope} QWidget#layerRow {{
+        background: transparent;
+        border-radius: 8px;
+        border-left: 3px solid transparent;
+    }}
+
+    #{scope} QWidget#layerRow:hover {{
+        background: {Colors.BG_HOVER};
+    }}
+
+    #{scope} QWidget#layerRow QPushButton {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 10px 10px 10px 12px;
+        color: {Colors.TEXT_PRIMARY};
+    }}
+
+    #{scope} QWidget#layerRow QPushButton:hover {{
+        background: {Colors.ACCENT};
+        color: white;
+    }}
+
+    #{scope} QWidget#layerRow[active="true"] {{
+        background: {Colors.with_alpha(Colors.ACCENT, 40)};
+        border-left: 3px solid {Colors.ACCENT};
+    }}
+
+    #{scope} QWidget#layerRow[active="true"] QPushButton {{
+        color: {Colors.TEXT_BRIGHT};
+        font-weight: bold;
+    }}
+
+    #{scope} QWidget#layerRow[active="true"] QPushButton:hover {{
+        background: {Colors.ACCENT};
+        color: white;
+    }}
+    """
+
+
+def video_label_row(scope: str) -> str:
+    return f"""
+    #{scope} QWidget#videoLabelRow {{
+        background: transparent;
+        border-radius: 8px;
+        border-left: 3px solid transparent;
+    }}
+
+    #{scope} QWidget#videoLabelRow:hover {{
+        background: {Colors.ACCENT};
+    }}
+
+    #{scope} QWidget#videoLabelRow:hover QPushButton {{
+        color: white;
+    }}
+
+    #{scope} QWidget#videoLabelRow[active="true"] {{
+        background: {Colors.with_alpha(Colors.ACCENT, 40)};
+        border-left: 3px solid {Colors.ACCENT};
+    }}
+
+    #{scope} QWidget#videoLabelRow QPushButton {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 6px 10px 6px 6px;
+        color: {Colors.TEXT_PRIMARY};
+    }}
+
+    #{scope} QWidget#videoLabelRow[active="true"] QPushButton {{
+        color: {Colors.TEXT_BRIGHT};
+        font-weight: {Typography.WEIGHT_BOLD_QSS};
+    }}
+    """
+
+
+def sidebar_tabs(scope: str) -> str:
+    return f"""
+    #{scope} QTabWidget {{
+        background: transparent;
+    }}
+
+    #{scope} QTabWidget::pane {{
+        border: none;
+        background: transparent;
+    }}
+
+    #{scope} QTabBar::tab {{
+        background: transparent;
+        color: {Colors.TEXT_MUTED};
+        border: none;
+        padding: 8px 12px;
+        margin: 0px;
+    }}
+
+    #{scope} QTabBar::tab:hover {{
+        background: {Colors.BG_HOVER};
+        color: {Colors.TEXT_PRIMARY};
+    }}
+
+    #{scope} QTabBar::tab:selected {{
+        background: {Colors.ACCENT};
+        color: white;
+        font-weight: {Typography.WEIGHT_BOLD_QSS};
     }}
     """

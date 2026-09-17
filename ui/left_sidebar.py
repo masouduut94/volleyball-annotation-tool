@@ -12,9 +12,10 @@ Two tabs:
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QFrame, QTabWidget)
-from vb_gui.vb_annotator.ui.utils import create_navigation_button
-from vb_gui.vb_annotator.ui.temporal_timeline import STATE_COLORS
-
+from .utils import create_navigation_button
+from .temporal_timeline import STATE_COLORS
+from .theme.theme import left_sidebar_style
+from .theme.theme_manager import register_themed_widget
 
 def _separator():
     line = QFrame()
@@ -50,6 +51,9 @@ class LeftSideBar(QWidget):
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.setFixedWidth(305)
+
+        self.setObjectName("leftSidebar")
+        register_themed_widget(self, left_sidebar_style)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -128,7 +132,6 @@ class FrameAnnotationTab(QWidget):
         self.label_buttons = {}
         self.db = db
         layers = self.db.get_layers()
-        self.setObjectName("leftSidebar")
 
         self.layer_labels = {
             layer.name: [
@@ -284,16 +287,12 @@ class FrameAnnotationTab(QWidget):
 
 
 class VideoLabelRow(QWidget):
-    """
-    Row for selecting a game-state label — styled like the Frame tab's
-    LayerRow (click to activate, orange highlight when active), with a
-    color swatch matching that label's color on the Temporal Timeline.
-    """
     clicked = pyqtSignal(str)
 
     def __init__(self, key, display, color):
         super().__init__()
         self.key = key
+        self.setObjectName("videoLabelRow")   # NEW
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -312,10 +311,11 @@ class VideoLabelRow(QWidget):
         self.set_active(False)
 
     def set_active(self, active):
-        if active:
-            self.setStyleSheet("background:#E95420; border-radius:8px;")
-        else:
-            self.setStyleSheet("background:transparent;")
+        # NEW — same property-based approach as LayerRow, replacing the
+        # inline "background:#E95420" / "background:transparent" hack.
+        self.setProperty("active", "true" if active else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def setEnabled(self, enabled):
         super().setEnabled(enabled)
@@ -435,6 +435,7 @@ class LayerRow(QWidget):
         super().__init__()
         self.layer_name = layer_name
         self.visible = True
+        self.setObjectName("layerRow")   # NEW
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -446,11 +447,12 @@ class LayerRow(QWidget):
 
         self.set_active(False)
 
-    def set_active(self, active):
-        if active:
-            self.setStyleSheet("background:#E95420; border-radius:8px;")
-        else:
-            self.setStyleSheet("background:transparent;")
+    def set_active(self, active: bool):
+        self.setProperty("active", "true" if active else "false")
+
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
 
 class LabelRow(QPushButton):

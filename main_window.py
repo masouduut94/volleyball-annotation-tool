@@ -32,7 +32,10 @@ from ui.videomae_export_dialog import VideoMAEExportDialog
 from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
-from vb_gui.vb_annotator.ui.undo_manager import DeleteAnnotationCommand
+from ui.undo_manager import DeleteAnnotationCommand
+
+from ui.theme.colors import Colors
+from ui.theme.theme_manager import ThemeManager
 
 from ui.drawing_tools import AnnotationRectItem
 from services.pose_schema import KEYPOINT_NAMES
@@ -41,6 +44,12 @@ from services.pose_schema import KEYPOINT_NAMES
 class MainWindow(QMainWindow):
     def __init__(self, db_path: str = "annotations.db"):
         super().__init__()
+
+        # Restore the saved theme BEFORE any child widget is constructed, so
+        # every panel's own stylesheet call picks up the right palette from
+        # the moment it's built, rather than rendering once in the wrong
+        # theme and only fixing itself on the next toggle.
+        ThemeManager.instance().load_saved_theme()
 
         self.original_frame = None
         self.setWindowTitle("Volleyball Annotation Platform")
@@ -153,7 +162,9 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-        central.setStyleSheet("QWidget { background-color: #1E1F24; }")
+        central.setObjectName("centralArea")
+        self._apply_central_theme()
+        ThemeManager.instance().themeChanged.connect(lambda _: self._apply_central_theme())
 
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -163,7 +174,7 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # NEW — confirmation bar + view stacked vertically, so it always
+        # confirmation bar + view stacked vertically, so it always
         # sits directly above the "main frame" being edited.
 
         content_layout.addWidget(self.left_toolbar, 0)
@@ -173,6 +184,12 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(content_layout, 1)
         main_layout.addWidget(self.bottom_toolbar, 0)
         main_layout.addWidget(self.timeline_panel, 0)
+
+    def _apply_central_theme(self):
+        if self.centralWidget() is not None:
+            self.centralWidget().setStyleSheet(
+                f"QWidget#centralArea {{ background-color: {Colors.BG_APP}; }}"
+            )
 
     def _create_left_toolbar(self):
         self.left_toolbar = LeftSideBar(self.db)

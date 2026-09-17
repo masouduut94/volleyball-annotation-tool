@@ -27,6 +27,9 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QToolButton, QScrollArea, QSlider, QCheckBox)
 
+from .theme.colors import Colors
+from .theme.theme_manager import ThemeManager
+
 STATE_COLORS = {
     "service": "#FF7A29",
     "play": "#3DDC84",
@@ -72,6 +75,7 @@ class TimelineCanvas(QWidget):
         total_h = RULER_HEIGHT + ROW_HEIGHT * len(LABEL_ORDER) + TIME_RULER_HEIGHT + BOTTOM_PADDING
         self.setMinimumHeight(total_h)
         self._recalc_width()
+        ThemeManager.instance().themeChanged.connect(lambda _: self.update())
 
     # ---------------- Public API ----------------
 
@@ -195,7 +199,7 @@ class TimelineCanvas(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#1E1F24"))
+        painter.fillRect(self.rect(), QColor(Colors.BG_APP))
 
         font = QFont()
         font.setPointSize(9)
@@ -204,9 +208,9 @@ class TimelineCanvas(QWidget):
         # ---- Label rows ----
         for i, label in enumerate(LABEL_ORDER):
             row_rect = self._row_rect(i)
-            bg = QColor("#25262C") if i % 2 == 0 else QColor("#1E1F24")
+            bg = QColor(Colors.BG_SURFACE) if i % 2 == 0 else QColor(Colors.BG_APP)
             painter.fillRect(QRectF(0, row_rect.top(), self.width(), ROW_HEIGHT), bg)
-            painter.setPen(QColor("#C7CBD4"))
+            painter.setPen(QColor(Colors.TEXT_PRIMARY))
             painter.drawText(
                 QRectF(8, row_rect.top(), LABEL_COL_WIDTH - 12, ROW_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
@@ -214,7 +218,7 @@ class TimelineCanvas(QWidget):
             )
 
         # ---- Top ruler: frame numbers ----
-        painter.setPen(QColor("#5A5F6B"))
+        painter.setPen(QColor(Colors.TEXT_MUTED))
         step = self._nice_tick_step()
         f = 0
         while f <= self.max_frame:
@@ -272,7 +276,7 @@ class TimelineCanvas(QWidget):
 
         # ---- Bottom ruler: time ----
         rows_bottom = RULER_HEIGHT + ROW_HEIGHT * len(LABEL_ORDER)
-        painter.fillRect(QRectF(0, rows_bottom, self.width(), TIME_RULER_HEIGHT), QColor("#17181C"))
+        painter.fillRect(QRectF(0, rows_bottom, self.width(), TIME_RULER_HEIGHT), QColor(Colors.BG_PANEL_ALT))
         painter.setPen(QColor("#5A5F6B"))
         f = 0
         while f <= self.max_frame:
@@ -287,7 +291,7 @@ class TimelineCanvas(QWidget):
 
         # ---- Playhead (drawn last, on top of everything) ----
         x = self._frame_to_x(self.current_frame)
-        painter.setPen(QPen(QColor("#FFFFFF"), 2))
+        painter.setPen(QPen(QColor(Colors.ACCENT), 2))
         painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
 
         # Playhead handle — small triangle at the very top, so the seek
@@ -300,7 +304,7 @@ class TimelineCanvas(QWidget):
         path.lineTo(x, handle_h)
         path.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#FFFFFF"))
+        painter.setBrush(QColor(Colors.ACCENT))
         painter.drawPath(path)
 
     # ---------------- Mouse interaction ----------------
