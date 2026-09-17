@@ -291,6 +291,9 @@ class RightSidebar(QWidget):
     gameStateDetectRequested = pyqtSignal()
     confirmLayerRequested = pyqtSignal(str)
 
+    poseDetectRequested = pyqtSignal()
+    poseClearRequested = pyqtSignal()
+
     def __init__(self, model_status=None, model_paths=None, parent=None):
         super().__init__(parent)
         self.model_status = model_status or {}
@@ -357,6 +360,41 @@ class RightSidebar(QWidget):
             model_path=self.model_paths.get("actions"),
             parent=self,
         )
+
+        separator_pose = QFrame()
+        separator_pose.setFrameShape(QFrame.Shape.HLine)
+        main_layout.addWidget(separator_pose)
+
+        section_title_pose = QLabel("Keypoints (Preview)")
+        section_title_pose.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        main_layout.addWidget(section_title_pose)
+
+        pose_hint = QLabel(
+            "Select one player box on the image, then Detect to preview "
+            "its pose. Visual only — nothing is saved."
+        )
+        pose_hint.setWordWrap(True)
+        pose_hint.setStyleSheet("color: #9096A3; font-size: 11px;")
+        main_layout.addWidget(pose_hint)
+
+        self.pose_row = DetectionRow(
+            "players_pose", "Player Pose",
+            "./resources/icons/right_sidebar/players.png",  # reuse for now; swap in a dedicated icon later
+            icon_size=30,
+            model_path=self.model_paths.get("players_pose"),
+            parent=self,
+        )
+        self.pose_row.run_button.setText("Detect")
+        self.pose_row.clicked.connect(self.poseDetectRequested.emit)
+        self.pose_row.pathRequested.connect(lambda: self.setPathRequested.emit("players_pose"))
+        main_layout.addWidget(self.pose_row)
+
+        self.pose_clear_button = QPushButton("Clear Preview")
+        self.pose_clear_button.setFixedHeight(26)
+        self.pose_clear_button.clicked.connect(self.poseClearRequested.emit)
+        main_layout.addWidget(self.pose_clear_button)
+
+
 
         self.ball_row.clicked.connect(lambda: self.detectRequested.emit("ball"))
         self.players_row.clicked.connect(lambda: self.detectRequested.emit("players"))
@@ -452,6 +490,8 @@ class RightSidebar(QWidget):
             self.actions_row.update_status(configured, model_path)
         elif model_name == "game_state":
             self.game_state_row.update_status(configured, model_path)
+        elif model_name == "players_pose":
+            self.pose_row.update_status(configured, model_path)
 
     def set_annotation_statuses(self, statuses):
         self.annotation_status_panel.set_statuses(statuses)
@@ -476,4 +516,10 @@ class RightSidebar(QWidget):
             "game_state",
             self.model_status.get("game_state", False),
             self.model_paths.get("game_state")
+        )
+
+        self.set_model_status(
+            "players_pose",
+            self.model_status.get("players_pose", False),
+            self.model_paths.get("players_pose")
         )

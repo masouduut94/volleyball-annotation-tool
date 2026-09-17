@@ -10,9 +10,9 @@ from __future__ import annotations
 from typing import List, Optional, Dict
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence, QTransform
+from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence, QTransform, QPainterPath
 from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem,
-                             QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox)
+                             QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox, QGraphicsPathItem)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
 from ui.undo_manager import (
@@ -25,6 +25,8 @@ from ui.undo_manager import (
 from database.db import DatabaseManager
 from database.data import Layer, Label, Annotation
 
+from services.pose_schema import SKELETON_EDGES, KEYPOINT_CONFIDENCE_THRESHOLD
+
 
 class ToolMode:
     """
@@ -35,6 +37,51 @@ class ToolMode:
     RECTANGLE = "rectangle"
     POLYGON = "polygon"
     NONE = "none"  # neutral mode:
+
+
+class PoseOverlayItem(QGraphicsPathItem):
+    """
+    A one-off, read-only visualization of a pose-model result — NOT an
+    annotation. It's never written to the database, never selectable,
+    movable, or hoverable, and it disappears the moment the scene's
+    selection changes (see AnnotationScene's selectionChanged wiring) or
+    the frame changes. Its only job is "show what the pose model sees
+    inside this box" as a disposable preview.
+
+    Added as a CHILD of the AnnotationRectItem it was detected from, so
+    it tracks correctly if that box is ever dragged, and is automatically
+    destroyed if the box itself is ever deleted. `points` must already be
+    expressed in the PARENT item's local coordinate frame (i.e. via
+    parent.mapFromScene(...)), not scene coordinates.
+    """
+    JOINT_RADIUS = 3.0
+
+    def __init__(self, points: dict, confidences: dict, parent_item):
+        super().__init__(parent_item)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setAcceptHoverEvents(False)
+        self.setZValue(parent_item.zValue() + 1)
+        self.setPen(QPen(QColor('#00E5FF'), 2))
+        self.setBrush(QColor(0, 229, 255, 60))
+
+        path = QPainterPath()
+
+        for name_a, name_b in SKELETON_EDGES:
+            pa, pb = points.get(name_a), points.get(name_b)
+            if pa is None or pb is None:
+                continue
+            if (confidences.get(name_a, 0.0) < KEYPOINT_CONFIDENCE_THRESHOLD
+                    or confidences.get(name_b, 0.0) < KEYPOINT_CONFIDENCE_THRESHOLD):
+                continue
+            path.moveTo(pa)
+            path.lineTo(pb)
+
+        for name, pt in points.items():
+            if confidences.get(name, 0.0) < KEYPOINT_CONFIDENCE_THRESHOLD:
+                continue
+            path.addEllipse(pt, self.JOINT_RADIUS, self.JOINT_RADIUS)
+
+        self.setPath(path)
 
 
 class AnnotationScene(QGraphicsScene):
@@ -78,7 +125,8 @@ class AnnotationScene(QGraphicsScene):
         # Polygon drawing state
         self.guide_line = None  # Temporary line showing current polygon edge
         self.hovered_item = None  # Currently hovered annotation item
-
+        self._pose_overlay_item = None
+        self.selectionChanged.connect(self.clear_pose_overlay)
         # ---------------------------------------------------------
         # Area-ranked selection (CVAT-style overlap handling)
         # ---------------------------------------------------------
@@ -179,6 +227,7 @@ class AnnotationScene(QGraphicsScene):
         self._last_click_viewport_pos = None
         self._click_cycle_index = 0
 
+        self._pose_overlay_item = None
         self.annotation_changed.emit()
         self.image_item = self.addPixmap(pixmap)
         self.image_item.setZValue(-100)
@@ -208,6 +257,7 @@ class AnnotationScene(QGraphicsScene):
         """
         # Cancel any ongoing polygon drawing when switching tools
         self.cancel_polygon()
+        self.clear_pose_overlay()
         self.tool_mode = mode
         self.tool_mode_changed.emit(mode)
 
@@ -564,6 +614,27 @@ class AnnotationScene(QGraphicsScene):
             self.hovered_item = None
 
     # ---------------------------------------------------------
+    # Pose Preview (ephemeral — not an annotation, never persisted)
+    # ---------------------------------------------------------
+
+    def show_pose_overlay(self, rect_item, points: dict, confidences: dict):
+        """Attach a one-off pose preview to rect_item. Any previous
+        preview (on this or a different box) is removed first — only one
+        preview is ever shown at a time."""
+        self.clear_pose_overlay()
+        self._pose_overlay_item = PoseOverlayItem(points, confidences, rect_item)
+
+    def clear_pose_overlay(self):
+        if self._pose_overlay_item is not None:
+            try:
+                if self._pose_overlay_item.scene() is not None:
+                    self.removeItem(self._pose_overlay_item)
+            except RuntimeError:
+                pass  # parent box was already deleted, taking this with it
+            self._pose_overlay_item = None
+
+
+    # ---------------------------------------------------------
     # Area-Ranked Selection (CVAT-style overlap handling)
     # ---------------------------------------------------------
     #
@@ -709,7 +780,6 @@ class AnnotationScene(QGraphicsScene):
     def _hide_stack_badge(self):
         if self._stack_badge is not None:
             self._stack_badge.hide()
-
 
     # ---------------------------------------------------------
     # Context Menu

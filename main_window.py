@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from typing import Optional
 
-from PyQt6.QtCore import QThread, QTimer
+from PyQt6.QtCore import QThread, QTimer, QPointF
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog,
                              QDialog, QMessageBox)
@@ -33,6 +33,9 @@ from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from vb_gui.vb_annotator.ui.undo_manager import DeleteAnnotationCommand
+
+from ui.drawing_tools import AnnotationRectItem
+from services.pose_schema import KEYPOINT_NAMES
 
 
 class MainWindow(QMainWindow):
@@ -111,6 +114,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+1"), self, activated=self.cycle_layer)
         QShortcut(QKeySequence("Alt+2"), self, activated=self.cycle_frame_label)
         QShortcut(QKeySequence("Alt+3"), self, activated=self.cycle_video_label)
+
+        # Right sidebar
+        QShortcut(QKeySequence("K"), self, activated=self.detect_keypoints_for_selection)
 
     # ---------------------------------------------------------
     # UI
@@ -192,6 +198,9 @@ class MainWindow(QMainWindow):
         self.right_sidebar.setPathRequested.connect(self.set_model_path)
         self.right_sidebar.gameStateDetectRequested.connect(self.open_game_state_dialog)
         self.right_sidebar.confirmLayerRequested.connect(self.confirm_layer_frame)
+
+        self.right_sidebar.poseDetectRequested.connect(self.detect_keypoints_for_selection)
+        self.right_sidebar.poseClearRequested.connect(self.clear_keypoints_preview)
 
         return self.right_sidebar
 
@@ -1007,6 +1016,7 @@ class MainWindow(QMainWindow):
         return {
             "ball": self.db.get_model_path("ball"),
             "players": self.db.get_model_path("players"),
+            "players_pose": self.db.get_model_path("players_pose"),
             "actions": self.db.get_model_path("actions"),
             "game_state": self.db.get_model_path("game_state"),
         }
@@ -1015,6 +1025,7 @@ class MainWindow(QMainWindow):
         return {
             "ball": self.auto_annotator.is_configured("ball"),
             "players": self.auto_annotator.is_configured("players"),
+            "players_pose": self.auto_annotator.is_configured("players_pose"),
             "actions": self.auto_annotator.is_configured("actions"),
             "game_state": self.game_state_classifier.is_configured(),
         }
@@ -1245,3 +1256,102 @@ class MainWindow(QMainWindow):
 
         # Move forward one frame.
         self.next_frame()
+
+    def detect_keypoints_for_selection(self):
+        """
+        Preview-only pose detection. Crops the ORIGINAL (full-resolution)
+        frame to whichever single player box is currently selected, runs
+        the pose model on that crop, and draws the result as a temporary
+        overlay attached to that box. Nothing here touches the database —
+        this exists purely to visualize what the pose model sees (e.g.
+        for future leg-position -> court-location work), not to annotate.
+        """
+        if self.original_frame is None:
+            QMessageBox.warning(self, "No Frame", "Please load an image or video first.")
+            return
+
+        selected = [
+            it for it in self.scene.selectedItems()
+            if isinstance(it, AnnotationRectItem) and it.layer_name == "players"
+        ]
+
+        if len(selected) != 1:
+            QMessageBox.information(
+                self, "Select One Player Box",
+                "Select exactly one player bounding box, then click "
+                "\"Detect\" under Keypoints (Preview).",
+            )
+            return
+
+        rect_item = selected[0]
+
+        if not self.auto_annotator.ensure_loaded("players_pose"):
+            QMessageBox.warning(
+                self, "Pose Model Not Configured",
+                "The keypoint-detection model hasn't been configured yet.\n\n"
+                "Set its path using the \"…\" button next to Keypoints (Preview).",
+            )
+            return
+
+        # sceneBoundingRect() (not rect()) so this is correct even if the
+        # box has been dragged since it was drawn/imported.
+        box = rect_item.sceneBoundingRect()
+        sx, sy = self.scene.scale_x, self.scene.scale_y
+
+        x0 = box.x() * sx
+        y0 = box.y() * sy
+        w0 = box.width() * sx
+        h0 = box.height() * sy
+
+        # Pad the crop a bit — a tight person-detector box often clips a
+        # raised arm or an extended leg right at the edge, which starves
+        # the pose model of context for exactly the joints you'd care
+        # about most.
+        pad_x, pad_y = w0 * 0.15, h0 * 0.15
+
+        crop_x0 = max(0, int(x0 - pad_x))
+        crop_y0 = max(0, int(y0 - pad_y))
+        crop_x1 = min(self.original_frame.shape[1], int(x0 + w0 + pad_x))
+        crop_y1 = min(self.original_frame.shape[0], int(y0 + h0 + pad_y))
+
+        if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+            QMessageBox.warning(self, "Invalid Selection", "That box doesn't cover a valid image region.")
+            return
+
+        crop = self.original_frame[crop_y0:crop_y1, crop_x0:crop_x1]
+
+        try:
+            result = self.auto_annotator.predict("players_pose", crop)
+        except RuntimeError as e:
+            QMessageBox.warning(self, "Model Error", str(e))
+            return
+
+        if getattr(result, "keypoints", None) is None or len(result.keypoints.xy) == 0:
+            QMessageBox.information(self, "No Keypoints Found",
+                                    "The pose model didn't detect a person in this box.")
+            return
+
+        # The crop can contain more than one person (a tight cluster near
+        # the net) — pick the highest-confidence detection, not index 0.
+        best_idx = int(result.boxes.conf.argmax()) if result.boxes is not None and len(result.boxes) else 0
+
+        xy = result.keypoints.xy[best_idx].tolist()
+        conf_tensor = result.keypoints.conf
+        conf = conf_tensor[best_idx].tolist() if conf_tensor is not None else [1.0] * len(xy)
+
+        points_local, confidences = {}, {}
+        for idx, name in enumerate(KEYPOINT_NAMES):
+            if idx >= len(xy):
+                break
+            px, py = xy[idx]
+            # crop-local, ORIGINAL-resolution pixel -> scene/display coords
+            scene_point = QPointF((crop_x0 + px) / sx, (crop_y0 + py) / sy)
+            # -> the rect item's own local frame, so the overlay (added as
+            # its child) tracks correctly even if the box has been dragged
+            points_local[name] = rect_item.mapFromScene(scene_point)
+            confidences[name] = float(conf[idx]) if idx < len(conf) else 0.0
+
+        self.scene.show_pose_overlay(rect_item, points_local, confidences)
+
+    def clear_keypoints_preview(self):
+        self.scene.clear_pose_overlay()
