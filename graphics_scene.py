@@ -10,22 +10,29 @@ from __future__ import annotations
 from typing import List, Optional, Dict
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence, QTransform, QPainterPath
+from PyQt6.QtGui import QColor, QPen, QPolygonF, QAction, QUndoStack, QKeySequence, QTransform, QPainterPath, \
+    QIntValidator
 from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineItem,
-                             QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox, QGraphicsPathItem)
+                             QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox, QGraphicsPathItem,
+                             QWidgetAction, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget, QVBoxLayout)
 
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
 from ui.undo_manager import (
     DeleteAnnotationCommand,
     CreateAnnotationCommand,
     ChangeLabelCommand,
-    BulkCreateAnnotationCommand
+    BulkCreateAnnotationCommand,
+    ChangeTrackInfoCommand
 )
 
 from database.db import DatabaseManager
 from database.data import Layer, Label, Annotation
 
 from services.pose_schema import SKELETON_EDGES, KEYPOINT_CONFIDENCE_THRESHOLD
+
+TRACKABLE_LAYERS = ("players", "ball")
+TRACK_ID_MAX = 99
+TEAM_ID_MAX = 2
 
 
 class ToolMode:
@@ -469,7 +476,9 @@ class AnnotationScene(QGraphicsScene):
             "color": self.current_color,
             "is_ai_generated": False,
             "confirmed": True,
-            "annotation_id": None
+            "annotation_id": None,
+            "track_id": None,  # NEW
+            "team_id": None,  # NEW
         }
 
         cmd = CreateAnnotationCommand(self, record, self.current_layer)
@@ -559,6 +568,8 @@ class AnnotationScene(QGraphicsScene):
             "type": "polygon",
             "label": self.current_label,
             "color": self.current_color,
+            "track_id": None,
+            "team_id": None,
         }
 
         cmd = CreateAnnotationCommand(self, record, self.current_layer)
@@ -632,7 +643,6 @@ class AnnotationScene(QGraphicsScene):
             except RuntimeError:
                 pass  # parent box was already deleted, taking this with it
             self._pose_overlay_item = None
-
 
     # ---------------------------------------------------------
     # Area-Ranked Selection (CVAT-style overlap handling)
@@ -786,62 +796,42 @@ class AnnotationScene(QGraphicsScene):
     # ---------------------------------------------------------
 
     def contextMenuEvent(self, event):
-        """
-        Display a context menu for changing the label of an annotation.
-
-        The menu shows labels that belong to the same layer as the clicked annotation.
-        """
-        # Find the item at the click position
         item = self._active_top_item or self._resolve_click_winner(event.scenePos())
-
         if item is None:
             return
 
-        item = self.itemAt(
-            event.scenePos(),
-            self.views()[0].transform(),
-        )
-
+        item = self.itemAt(event.scenePos(), self.views()[0].transform())
         if item is None:
             return
 
-        # Find the annotation record for this item
         target = None
         layer_name = None
-
         for layer, records in self.layer_items.items():
             for record in records:
                 if record["item"] == item:
                     target = record
                     layer_name = layer
                     break
-
             if target is not None:
                 break
 
         if target is None:
             return
 
-        # Create context menu
         menu = QMenu()
 
-        # Add actions for each label available in this layer
-        labels = self.layer_labels.get(layer_name, [])
+        if layer_name in TRACKABLE_LAYERS:  # NEW
+            self._add_tracking_menu_section(menu, target, layer_name)
+            menu.addSeparator()
 
+        labels = self.layer_labels.get(layer_name, [])
         for label in labels:
             action = QAction(label.name, menu)
-
-            # Connect action to change_label with the label's info
             action.triggered.connect(
-                lambda checked=False,
-                       l=label.name,
-                       c=label.color,
-                       t=target: self.change_label(t, l, c)
+                lambda checked=False, l=label.name, c=label.color, t=target: self.change_label(t, l, c)
             )
-
             menu.addAction(action)
 
-        # Show the menu
         menu.exec(event.screenPos())
 
     def change_label(self, target: dict, label: str, color: str):
@@ -852,6 +842,80 @@ class AnnotationScene(QGraphicsScene):
             return  # no-op, don't pollute the undo stack
 
         cmd = ChangeLabelCommand(self, target, target["label"], target["color"], label, color)
+        self.undo_stack.push(cmd)
+
+    def _add_tracking_menu_section(self, menu: QMenu, target: dict, layer_name: str):
+        """
+        Embeds an editable, pre-filled tracking form at the top of the
+        right-click menu: "Player # / Team #" for the players layer, "Ball #"
+        for the ball layer. Integer-only; clearing a field unsets that value.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+
+        track_edit = QLineEdit(container)
+        track_edit.setValidator(QIntValidator(0, TRACK_ID_MAX, container))
+        track_edit.setPlaceholderText("e.g. 10")
+        if target.get("track_id") is not None:
+            track_edit.setText(str(target["track_id"]))
+
+        team_edit = None
+        if layer_name == "players":
+            player_row = QHBoxLayout()
+            player_row.addWidget(QLabel("Player #"))
+            player_row.addWidget(track_edit)
+            layout.addLayout(player_row)
+
+            team_edit = QLineEdit(container)
+            team_edit.setValidator(QIntValidator(1, TEAM_ID_MAX, container))
+            team_edit.setPlaceholderText("1 or 2")
+            if target.get("team_id") is not None:
+                team_edit.setText(str(target["team_id"]))
+
+            team_row = QHBoxLayout()
+            team_row.addWidget(QLabel("Team #"))
+            team_row.addWidget(team_edit)
+            layout.addLayout(team_row)
+        else:  # ball
+            ball_row = QHBoxLayout()
+            ball_row.addWidget(QLabel("Ball #"))
+            ball_row.addWidget(track_edit)
+            layout.addLayout(ball_row)
+
+        apply_btn = QPushButton("Set")
+
+        def _commit():
+            def _parse(edit):
+                text = edit.text().strip()
+                return int(text) if text else None
+
+            self.set_track_info(target, _parse(track_edit),
+                                _parse(team_edit) if team_edit is not None else None)
+            menu.close()
+
+        apply_btn.clicked.connect(_commit)
+        track_edit.returnPressed.connect(_commit)
+        if team_edit is not None:
+            team_edit.returnPressed.connect(_commit)
+
+        layout.addWidget(apply_btn)
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(container)
+        menu.addAction(action)
+
+    def set_track_info(self, target: dict, track_id, team_id):
+        """Undoable edit of an annotation's track_id/team_id, triggered from
+        the right-click menu."""
+        if target.get("track_id") == track_id and target.get("team_id") == team_id:
+            return  # no-op, don't pollute the undo stack
+        cmd = ChangeTrackInfoCommand(
+            self, target, target["item"].layer_name,
+            target.get("track_id"), target.get("team_id"),
+            track_id, team_id,
+        )
         self.undo_stack.push(cmd)
 
     def set_media_context(self, media_path, media_type, frame_number):
@@ -984,7 +1048,9 @@ class AnnotationScene(QGraphicsScene):
                     label=labels[record['label']],
                     frame_number=frame_number,
                     shape_type=record['type'],
-                    geometry=geometry
+                    geometry=geometry,
+                    track_id=record.get("track_id"),
+                    team_id=record.get("team_id"),
                 )
             )
 
@@ -996,40 +1062,28 @@ class AnnotationScene(QGraphicsScene):
 
             if ann.shape_type == "rectangle":
                 g = ann.geometry
-                rect = QRectF(
-                    g["x"] / self.scale_x,
-                    g["y"] / self.scale_y,
-                    g["width"] / self.scale_x,
-                    g["height"] / self.scale_y
-                )
-                item = AnnotationRectItem(rect, color, ann.label.name)
+                rect = QRectF(g["x"] / self.scale_x, g["y"] / self.scale_y,
+                              g["width"] / self.scale_x, g["height"] / self.scale_y)
+                item = AnnotationRectItem(rect, color, ann.label.name,
+                                          track_id=ann.track_id, team_id=ann.team_id)  # NEW kwargs
             elif ann.shape_type == "polygon":
-                polygon = QPolygonF(
-                    [QPointF(x / self.scale_x, y / self.scale_y) for x, y in ann.geometry]
-                )
-                item = AnnotationPolygonItem(polygon, color, ann.label.name)
+                polygon = QPolygonF([QPointF(x / self.scale_x, y / self.scale_y) for x, y in ann.geometry])
+                item = AnnotationPolygonItem(polygon, color, ann.label.name,
+                                             track_id=ann.track_id, team_id=ann.team_id)  # NEW kwargs
             else:
                 continue
 
             item.layer_name = ann.layer.name
-
             z_values = {"court": 0, "players": 10, "ball": 20, "actions": 30}
             item.setZValue(z_values.get(layer_name, 0))
-
             self.addItem(item)
 
-            self.layer_items[layer_name].append(  # FIXED: was self.current_layer
-                {
-                    "item": item,
-                    "type": ann.shape_type,
-                    "label": ann.label.name,
-                    "color": color,
-                    "layer": ann.layer.name,
-                    "annotation_id": ann.annotation_id,
-                    "is_ai_generated": ann.is_ai_generated,
-                    "confirmed": ann.confirmed,
-                }
-            )
+            self.layer_items[layer_name].append({
+                "item": item, "type": ann.shape_type, "label": ann.label.name, "color": color,
+                "layer": ann.layer.name, "annotation_id": ann.annotation_id,
+                "is_ai_generated": ann.is_ai_generated, "confirmed": ann.confirmed,
+                "track_id": ann.track_id, "team_id": ann.team_id,  # NEW
+            })
 
     def import_yolo_result(
             self,
@@ -1066,7 +1120,9 @@ class AnnotationScene(QGraphicsScene):
                 "color": label.color,
                 "is_ai_generated": True,
                 "confirmed": False,
-                "annotation_id": None,  # filled in by the command after insert
+                "annotation_id": None,
+                "track_id": None,  # AI doesn't assign identities
+                "team_id": None,  #
             })
             db_annotations.append(
                 Annotation(

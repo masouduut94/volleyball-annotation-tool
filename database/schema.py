@@ -92,6 +92,8 @@ class Annotation(Base):
     label_id = Column(Integer, ForeignKey("labels.id"), nullable=False, )
     shape_type = Column(String(20), nullable=False)
     geometry = Column(Text, nullable=False)
+    track_id = Column(Integer, nullable=True)  # NEW — jersey # (players) or ball #
+    team_id = Column(Integer, nullable=True)  # NEW — players only; NULL for ball
     created_at = Column(DateTime, default=datetime.utcnow, )
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, )
     media = relationship("Media", back_populates="annotations", )

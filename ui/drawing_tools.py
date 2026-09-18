@@ -24,6 +24,8 @@ class BaseAnnotationItem:
 
         self.annotation_color = QColor('#00FF00')
         self.label = ''
+        self.track_id = None
+        self.team_id = None
 
         # Transparency levels for fill colors (40 = ~16% opacity, 80 = ~31% opacity)
         self.fill_alpha = 40
@@ -89,39 +91,45 @@ class BaseAnnotationItem:
         # Set up the label text item
         self._setup_label()
 
+    def _display_text(self) -> str:
+        """The class label plus tracking info, e.g. 'player #10 (T1)' or
+        'ball #5'. Falls back to just the class label when nothing's set."""
+        if not self.label:
+            return ''
+        if self.track_id is None:
+            return self.label
+        if self.team_id is not None:
+            return f'{self.label} #{self.track_id} (T{self.team_id})'
+        return f'{self.label} #{self.track_id}'
+
     def _setup_label(self):
-        """
-        Create and configure the label text item.
-        Removes existing label if present and creates a new one with HTML styling.
-        """
-        # Clean up existing label if it exists
         if hasattr(self, 'label_item') and self.label_item:
             if self.label_item.scene():
                 self.label_item.scene().removeItem(self.label_item)
 
-        # If no label text, remove label item
-        if not self.label:
+        text = self._display_text()  # CHANGED — was `if not self.label:`/`{self.label}`
+        if not text:
             self.label_item = None
             return
 
-        # Create a new text item with the label
-        self.label_item = QGraphicsTextItem(self.label, self)
-        # Set text color to white
+        self.label_item = QGraphicsTextItem(text, self)
         self.label_item.setDefaultTextColor(Qt.GlobalColor.white)
-        # Set font: Arial, size 10, bold
         self.label_item.setFont(QFont('Arial', 10, QFont.Weight.Bold))
-
-        # Use HTML for styling: dark semi-transparent background with rounded corners
         self.label_item.setHtml(
             f'<div style="background-color: rgba(0,0,0,160); '
             f'padding: 2px 6px; border-radius: 3px;">'
-            f'{self.label}</div>'
+            f'{text}</div>'
         )
-
-        # Position the label above the annotation
         self._update_label_position()
-        # Ensure label appears on top of other items
         self.label_item.setZValue(1000)
+
+    def set_track_info(self, track_id, team_id):
+        """Update tracking metadata and refresh the on-canvas label to show
+        it. Does not touch color/pen — only the label pill's text."""
+        self.track_id = track_id
+        self.team_id = team_id
+        self._setup_label()
+        self._update_label_position()
 
     def _update_label_position(self):
         """
@@ -307,7 +315,7 @@ class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):
     # Minimum size to prevent the rectangle from becoming too small
     MIN_SIZE = 5.0
 
-    def __init__(self, rect, color: str, label: str = ''):
+    def __init__(self, rect, color: str, label: str = '', track_id=None, team_id=None):
         """
         Initialize a rectangular annotation.
 
@@ -319,6 +327,7 @@ class AnnotationRectItem(QGraphicsRectItem, BaseAnnotationItem):
         # Initialize both parent classes
         QGraphicsRectItem.__init__(self, rect)
         BaseAnnotationItem.__init__(self)
+        self.set_track_info(track_id, team_id)
 
         # Set up visual style
         self._setup_style(color, label)
@@ -589,7 +598,7 @@ class AnnotationPolygonItem(QGraphicsPolygonItem, BaseAnnotationItem):
     Inherits from QGraphicsPolygonItem (for polygon functionality) and BaseAnnotationItem (for annotation features).
     """
 
-    def __init__(self, polygon, color: str, label: str = ''):
+    def __init__(self, polygon, color: str, label: str = '', track_id=None, team_id=None):
         """
         Initialize a polygon annotation.
 
@@ -605,6 +614,7 @@ class AnnotationPolygonItem(QGraphicsPolygonItem, BaseAnnotationItem):
         # Set up visual style
         self._setup_style(color, label)
         self._apply_normal()
+        self.set_track_info(track_id, team_id)
 
         # Enable interaction flags
         self.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, True)

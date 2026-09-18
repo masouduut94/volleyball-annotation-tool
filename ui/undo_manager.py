@@ -143,6 +143,8 @@ class DeleteAnnotationCommand(QUndoCommand):
                     geometry=self._geometry_for_item(),
                     is_ai_generated=self.record.get("is_ai_generated", False),
                     confirmed=self.record.get("confirmed", True),
+                    track_id=self.record.get("track_id"),  # NEW
+                    team_id=self.record.get("team_id"),  # NEW
                 )
                 new_id = self.scene.db.insert_annotation(
                     self.media_path, self.media_type, self.width, self.height,
@@ -299,3 +301,38 @@ class BulkCreateAnnotationCommand(QUndoCommand):
 
         self.scene.annotation_changed.emit()
         self.scene._unconfirm_frame_for_layer(self.layer_name)
+
+
+class ChangeTrackInfoCommand(QUndoCommand):
+    """Undo/redo for setting/editing an annotation's track_id/team_id
+    from the right-click menu. Syncs to the DB immediately when the row
+    has already been persisted, for the same reason as ChangeLabelCommand."""
+
+    def __init__(self, scene, record: dict, layer_name: str,
+                 old_track_id, old_team_id, new_track_id, new_team_id,
+                 description="Change tracking info"):
+        super().__init__(description)
+        self.scene = scene
+        self.record = record
+        self.layer_name = layer_name
+        self.old_track_id, self.old_team_id = old_track_id, old_team_id
+        self.new_track_id, self.new_team_id = new_track_id, new_team_id
+
+    def _apply(self, track_id, team_id):
+        self.record["track_id"] = track_id
+        self.record["team_id"] = team_id
+        self.record["item"].set_track_info(track_id, team_id)
+
+        if self.record.get("annotation_id") is not None:
+            self.scene.db.update_annotation_track(
+                self.record["annotation_id"], track_id, team_id,
+            )
+
+        self.scene.annotation_changed.emit()
+        self.scene._unconfirm_frame_for_layer(self.layer_name)
+
+    def undo(self):
+        self._apply(self.old_track_id, self.old_team_id)
+
+    def redo(self):
+        self._apply(self.new_track_id, self.new_team_id)

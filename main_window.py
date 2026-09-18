@@ -779,8 +779,8 @@ class MainWindow(QMainWindow):
                         label=labels[name],
                         layer=layer,
                         geometry=[[float(x), float(y)] for x, y in mask],
-                        is_ai_generated=True,  # NEW — was silently left at the dataclass default (False)
-                        confirmed=False,  # NEW — was silently left at the dataclass default (True)
+                        is_ai_generated=True,
+                        confirmed=False,
                     )
                 )
                 imported += 1

@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, inspect, text
 from sqlalchemy.orm import sessionmaker, joinedload, selectinload
 
 from .schema import (
@@ -53,17 +53,28 @@ class DatabaseManager:
         )
 
         Base.metadata.create_all(self.engine)
+        self._migrate_schema()
 
-        self.Session = sessionmaker(
-            bind=self.engine,
-            expire_on_commit=False,
-        )
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
         self._create_default_data()
 
     # ------------------------------------------------------------------
     # Default volleyball layers
     # ------------------------------------------------------------------
+
+    def _migrate_schema(self):
+        """create_all() only creates tables that don't exist yet — it never
+        alters an existing table. This adds any columns a prior version of
+        this file didn't have, so opening an older annotations.db doesn't
+        crash the moment a query touches a new column."""
+        inspector = inspect(self.engine)
+        existing_cols = {col["name"] for col in inspector.get_columns("annotations")}
+        with self.engine.begin() as conn:
+            if "track_id" not in existing_cols:
+                conn.execute(text("ALTER TABLE annotations ADD COLUMN track_id INTEGER"))
+            if "team_id" not in existing_cols:
+                conn.execute(text("ALTER TABLE annotations ADD COLUMN team_id INTEGER"))
 
     def _create_default_data(self):
         with self.Session() as session:
@@ -246,6 +257,8 @@ class DatabaseManager:
                         geometry=json.loads(r.geometry),
                         is_ai_generated=r.is_ai_generated,
                         confirmed=r.confirmed,
+                        track_id=r.track_id,
+                        team_id=r.team_id,
                     )
                 )
 
@@ -300,6 +313,8 @@ class DatabaseManager:
                     frame_number=frame_number,
                     shape_type=ann.shape_type,
                     geometry=json.dumps(ann.geometry),
+                    track_id=ann.track_id,
+                    team_id=ann.team_id,
                 )
                 session.add(record)
                 session.commit()
@@ -370,6 +385,8 @@ class DatabaseManager:
                         geometry=json.loads(r.geometry),
                         is_ai_generated=r.is_ai_generated,
                         confirmed=r.confirmed,
+                        track_id=r.track_id,
+                        team_id=r.team_id,
                     )
                 )
 
@@ -450,6 +467,7 @@ class DatabaseManager:
                     media_id=media.id, layer_id=layer.layer_id, label_id=ann.label.label_id,
                     frame_number=frame_number, shape_type=ann.shape_type,
                     geometry=json.dumps(ann.geometry), is_ai_generated=True, confirmed=False,
+                    track_id=ann.track_id, team_id=ann.team_id
                 )
                 session.add(record)
                 session.commit()
@@ -606,7 +624,6 @@ class DatabaseManager:
                 result.setdefault(layer_name, {})[label_name] = count
             return result
 
-
     @staticmethod
     def _reset_frame_review(session, media_id, layer_id, frame_number):
         review = (
@@ -647,6 +664,8 @@ class DatabaseManager:
                 geometry=json.dumps(annotation.geometry),
                 is_ai_generated=annotation.is_ai_generated,
                 confirmed=annotation.confirmed,
+                track_id=annotation.track_id,  # NEW
+                team_id=annotation.team_id,  # NEW
             )
             session.add(record)
             session.commit()
@@ -979,6 +998,7 @@ class DatabaseManager:
                     media_id=media.id, layer_id=layer.layer_id, label_id=ann.label.label_id,
                     frame_number=frame_number, shape_type=ann.shape_type,
                     geometry=json.dumps(ann.geometry), is_ai_generated=True, confirmed=False,
+                    track_id=ann.track_id, team_id=ann.team_id,
                 )
                 session.add(record)
                 session.commit()
@@ -988,3 +1008,12 @@ class DatabaseManager:
 
             self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
             return ids, skipped
+
+    def update_annotation_track(self, annotation_id: int, track_id, team_id):
+        """Persist a track-id/team-id edit immediately for an already-saved
+        row, same rationale as update_annotation_label."""
+        with self.Session() as session:
+            session.query(SQLAAnnotation).filter(
+                SQLAAnnotation.id == annotation_id
+            ).update({"track_id": track_id, "team_id": team_id}, synchronize_session=False)
+            session.commit()

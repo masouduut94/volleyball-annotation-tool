@@ -30,8 +30,17 @@ class Annotation:
     shape_type: str
     geometry: dict | list
     annotation_id: Optional[int] = None  # Optional ID for reference
-    is_ai_generated: bool = False  # NEW
-    confirmed: bool = True  # NEW — human-drawn defaults to confirmed
+    is_ai_generated: bool = False
+    confirmed: bool = True  # — human-drawn defaults to confirmed
+    track_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+    def combined_track_id(self) -> Optional[int]:
+        """team 1, player 7 -> 107; team 2, player 12 -> 212. Bump the
+        multiplier if you ever expect >99 players on one team."""
+        if self.team_id is None or self.track_id is None:
+            return None
+        return self.team_id * 100 + self.track_id
 
 
 @dataclass_json
