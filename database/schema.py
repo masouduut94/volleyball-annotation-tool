@@ -64,6 +64,7 @@ class Media(Base):
     media_type = Column(String(10), nullable=False)
     width = Column(Integer, nullable=False)
     height = Column(Integer, nullable=False)
+    court_coordinates = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, )
 
     annotations = relationship(

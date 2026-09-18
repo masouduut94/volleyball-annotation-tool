@@ -1,3 +1,4 @@
+import math
 import cv2
 import numpy as np
 from typing import Optional
@@ -102,6 +103,8 @@ class MainWindow(QMainWindow):
         # Bottom toolbar
         QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
         QShortcut(QKeySequence("D"), self, activated=self.next_frame)
+        QShortcut(QKeySequence("Left"), self, activated=self.previous_frame)
+        QShortcut(QKeySequence("Right"), self, activated=self.next_frame)
         QShortcut(QKeySequence("Q"), self, activated=self.previous_15_frame)
         QShortcut(QKeySequence("E"), self, activated=self.next_15_frame)
         QShortcut(QKeySequence("Space"), self, activated=self.toggle_playback)
@@ -201,6 +204,11 @@ class MainWindow(QMainWindow):
         self.left_toolbar.videoMarkStartRequested.connect(self.tag_mark_start)
         self.left_toolbar.videoMarkEndRequested.connect(self.tag_mark_end)
         self.left_toolbar.videoCancelRequested.connect(self.tag_cancel)
+
+        self.left_toolbar.publishCourtCoordinatesRequested.connect(
+            self.publish_court_coordinates
+        )
+
         self.deactivate_tools()
 
         return self.left_toolbar
@@ -695,6 +703,8 @@ class MainWindow(QMainWindow):
 
         statuses = self.db.get_frame_layer_statuses(path, frame)
         self.right_sidebar.set_annotation_statuses(statuses)
+
+        self._refresh_publish_court_button(path, frame)
 
     def run_batch_inference_on_frame(self, frame_number, model_keys, mode="replace"):
         imported_total = 0
@@ -1380,3 +1390,383 @@ class MainWindow(QMainWindow):
 
     def clear_keypoints_preview(self):
         self.scene.clear_pose_overlay()
+
+    # ---------------------------------------------------------
+    # Batched AI inference (GPU-aware, streaming)
+    # ---------------------------------------------------------
+
+    def run_batch_inference_on_frames(
+            self,
+            frame_numbers,
+            model_keys,
+            mode="replace",
+            batch_size=None,
+            progress_callback=None,
+            cancel_check=None,
+            filter_players_outside_court=True,
+    ):
+        """
+        Run one or more YOLO models across a list of frames, reading
+        frames in `batch_size`-sized chunks so peak RAM is bounded by
+        batch_size (not by the total frame count), while still feeding
+        the GPU a full batch per forward pass.
+
+        Loop order: model -> chunks of frames -> inference -> DB write.
+        Outer loop is the model, so each model reads every frame once
+        and finishes with the DB before the next model starts. Nested
+        the other way (frame -> all models) would re-read every frame
+        N times, which is the failure mode we're fixing.
+
+        Returns stats dict: {"frames": int, "imported": int, "skipped": int}.
+
+        `progress_callback(frames_done, frames_total)` is called after
+        each batch. `cancel_check()` is polled between batches — model
+        inference itself can't be interrupted mid-forward-pass.
+        """
+        stats = {"frames": 0, "imported": 0, "skipped": 0}
+
+        if not frame_numbers:
+            return stats
+
+        frame_numbers = list(frame_numbers)
+        path, media_type, _ = self.current_media_info()
+        if path is None:
+            return stats
+
+        for model_key in model_keys:
+            if cancel_check and cancel_check():
+                break
+
+            layer = self.db.get_layer(model_key)
+
+            # -------- 1. Decide which frames this model should touch -----
+            # Done up front so the "skipped" count for keep-mode is exact
+            # and doesn't depend on how the streaming loop chunks things.
+            if mode == "keep":
+                target_frames = [
+                    fn for fn in frame_numbers
+                    if not self.db.has_ai_annotations(path, layer.layer_id, fn)
+                ]
+                stats["skipped"] += len(frame_numbers) - len(target_frames)
+            else:
+                target_frames = frame_numbers
+
+            if not target_frames:
+                continue
+
+            # -------- 2. Resolve batch size once per model --------------
+            # estimate_batch_size() reads free VRAM, so it should be
+            # called per model (a segmentation model wants a smaller
+            # batch than a detection one on the same card).
+            effective_batch = (
+                batch_size
+                if batch_size is not None and batch_size > 0
+                else self.auto_annotator.estimate_batch_size(model_key)
+            )
+
+            # -------- 3. Stream: read a chunk, infer, write, drop ------
+            total = len(target_frames)
+            done = 0
+
+            for chunk_start in range(0, total, effective_batch):
+                if cancel_check and cancel_check():
+                    return stats
+
+                chunk_frames_numbers = target_frames[
+                    chunk_start:chunk_start + effective_batch
+                ]
+
+                # Read only this chunk into RAM. `frames` is dropped at
+                # the end of each iteration, so peak resident memory is
+                # effective_batch * frame_bytes, not total * frame_bytes.
+                frames = []
+                valid_frame_numbers = []
+                for fn in chunk_frames_numbers:
+                    frame = self.get_frame_by_number(fn)
+                    if frame is None:
+                        # A missing frame mid-video (corrupt decode,
+                        # seeking past EOF) shouldn't abort the whole
+                        # run — just skip it and move on.
+                        continue
+                    frames.append(frame)
+                    valid_frame_numbers.append(fn)
+
+                if not frames:
+                    done += len(chunk_frames_numbers)
+                    if progress_callback:
+                        progress_callback(done, total)
+                    continue
+
+                # predict_batch already chunks internally, but passing
+                # batch_size=len(frames) here makes it a single forward
+                # pass per outer iteration — no nested re-chunking, so
+                # the GPU sees exactly what we accumulated on the CPU.
+                for idx, result in self.auto_annotator.predict_batch(
+                        model_key, frames, batch_size=len(frames)
+                ):
+                    fn = valid_frame_numbers[idx]
+                    annotations, _ = self.convert_result_to_annotations_for_frame(
+                        result, layer, path, fn
+                    )
+
+                    if model_key == "players" and filter_players_outside_court:
+                        annotations = self._filter_annotations_outside_court(annotations, path)
+
+                    if not annotations:
+                        # No detections for this frame — still counts as
+                        # processed, just nothing to write. Falls through
+                        # to the stats["frames"] increment below.
+                        stats["frames"] += 1
+                        continue
+
+                    ids, skipped = self.db.replace_ai_annotations(
+                        media_path=path,
+                        media_type=media_type,
+                        width=self.original_width,
+                        height=self.original_height,
+                        layer=layer,
+                        frame_number=fn,
+                        annotations=annotations,
+                    )
+                    stats["imported"] += sum(1 for i in ids if i is not None)
+                    stats["skipped"] += skipped
+                    stats["frames"] += 1
+
+                # Explicitly drop the chunk before reading the next one,
+                # so a slow GC doesn't accumulate two chunks' worth of
+                # frames in memory at the chunk boundary.
+                del frames
+
+                done += len(chunk_frames_numbers)
+                if progress_callback:
+                    progress_callback(done, total)
+
+        return stats
+
+    @staticmethod
+    def convert_result_to_annotations_for_frame(
+            result,
+            layer: Layer,
+            path,
+            frame_number
+    ):
+        """
+        Same as convert_result_to_annotations(), but takes the media info
+        explicitly so it works correctly inside a batched loop where the
+        "current" frame is no longer the frame being processed.
+        """
+        annotations = []
+        labels = {label.name: label for label in layer.labels}
+
+        if result.masks is not None:
+            for mask, cls in zip(result.masks.xy, result.boxes.cls):
+                name = result.names[int(cls)].lower()
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
+                if name not in labels:
+                    continue
+
+                annotations.append(
+                    Annotation(
+                        media_name=path,
+                        frame_number=frame_number,
+                        shape_type='polygon',
+                        label=labels[name],
+                        layer=layer,
+                        geometry=[[float(x), float(y)] for x, y in mask],
+                        is_ai_generated=True,
+                        confirmed=False,
+                    )
+                )
+
+        elif result.boxes is not None:
+            for box in result.boxes:
+                cls = int(box.cls[0])
+                name = result.names[cls].lower()
+                if layer.name == 'players' and name == 'person':
+                    name = 'player'
+                if name not in labels:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                annotations.append(
+                    Annotation(
+                        media_name=path, frame_number=frame_number,
+                        shape_type='rectangle', label=labels[name], layer=layer,
+                        geometry={"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1},
+                        is_ai_generated=True, confirmed=False,
+                    )
+                )
+
+        return annotations, len(annotations)
+
+    def _filter_annotations_outside_court(self, annotations, path):
+        """
+        Drops annotations whose foot point — bottom-center of a rectangle,
+        or the bottom-most point(s) of a polygon — falls outside this
+        media's cached whole-court polygon. No-op if no court has been
+        published/cached yet, so the checkbox is always safe to enable.
+        """
+        polygon = self.db.get_media_court_polygon(path)
+        if not polygon:
+            return annotations
+
+        polygon_np = np.array(polygon, dtype=np.float32)
+        kept = []
+
+        for ann in annotations:
+            geom = ann.geometry
+            if ann.shape_type == "rectangle":
+                foot_x = geom["x"] + geom["width"] / 2
+                foot_y = geom["y"] + geom["height"]
+            else:
+                pts = geom
+                max_y = max(p[1] for p in pts)
+                bottom_pts = [p for p in pts if p[1] == max_y]
+                foot_x = sum(p[0] for p in bottom_pts) / len(bottom_pts)
+                foot_y = max_y
+
+            inside = cv2.pointPolygonTest(polygon_np, (float(foot_x), float(foot_y)), False) >= 0
+            if inside:
+                kept.append(ann)
+
+        return kept
+
+    # ---------------------------------------------------------
+    # Bulk court propagation
+    # ---------------------------------------------------------
+
+    def _refresh_publish_court_button(self, path, frame):
+        """Enable only when every precondition is met, and put the reason
+        in the tooltip instead of a failure MessageBox after a click."""
+        tab = self.left_toolbar.frame_tab
+
+        if self.video_path is None:
+            tab.set_publish_court_enabled(
+                False, "Only available for a loaded video."
+            )
+            return
+
+        if frame is None:
+            tab.set_publish_court_enabled(False, "No frame selected.")
+            return
+
+        if not self.db.get_court_annotations(path, frame):
+            tab.set_publish_court_enabled(
+                False,
+                "This frame has no court annotations to copy. Draw at "
+                "least one court shape first, then hit Save.",
+            )
+            return
+
+        if not self.db.get_game_on_frames(path):
+            tab.set_publish_court_enabled(
+                False,
+                "This video has no Service or In-Play tags — tag some "
+                "segments on the timeline first.",
+            )
+            return
+
+        tab.set_publish_court_enabled(
+            True,
+            "Copy this frame's court annotations to every Service / "
+            "In-Play frame of this video.",
+        )
+
+    def publish_court_coordinates(self):
+        path, media_type, frame = self.current_media_info()
+
+        # Defensive re-check — the button shouldn't be clickable if any
+        # of these fail, but the user may have hit Save / Undo between
+        # the last refresh and the click.
+        if path is None or self.video_path is None or frame is None:
+            return
+
+        source = self.db.get_court_annotations(path, frame)
+        if not source:
+            QMessageBox.warning(
+                self, "No Court Annotation",
+                "This frame has no court annotations to copy.",
+            )
+            return
+
+        targets = [f for f in self.db.get_game_on_frames(path) if f != frame]
+        if not targets:
+            QMessageBox.information(
+                self, "Nothing To Do",
+                "No Service / In-Play frames to copy into (other than "
+                "the current frame).",
+            )
+            return
+
+        existing = self.db.count_frames_with_court_annotations(path, targets)
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Publish Court Coordinates")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(
+            f"Copy {len(source)} court shape(s) from frame {frame} "
+            f"to {len(targets)} Service / In-Play frame(s)?"
+        )
+        msg.setInformativeText(
+            f"Target range: frames {targets[0]}–{targets[-1]}\n"
+            + (
+                f"{existing} of those frames already have court annotations."
+                if existing else
+                "None of those frames currently have court annotations."
+            )
+        )
+
+        # Three-way choice: replace, skip, cancel. Mapped onto Qt's
+        # standard buttons so the labels stay native per platform.
+        replace_btn = msg.addButton(
+            "Replace Existing", QMessageBox.ButtonRole.DestructiveRole,
+        )
+        skip_btn = msg.addButton(
+            "Skip Existing", QMessageBox.ButtonRole.AcceptRole,
+        )
+        msg.addButton(QMessageBox.StandardButton.Cancel)
+
+        if existing == 0:
+            # No conflict — collapse to a plain Copy/Cancel prompt so
+            # the user isn't asked to reason about a mode that can't matter.
+            replace_btn.setText("Copy")
+            skip_btn.setVisible(False)
+
+        msg.setDefaultButton(skip_btn if existing else replace_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked is not replace_btn and clicked is not skip_btn:
+            return
+
+        mode = "replace" if clicked is replace_btn else "skip_existing"
+
+        stats = self.db.copy_court_annotations_to_frames(
+            media_path=path,
+            media_type=media_type,
+            width=self.original_width,
+            height=self.original_height,
+            source_frame=frame,
+            target_frames=targets,
+            mode=mode,
+        )
+
+        # Current frame was not touched, but the per-layer status for
+        # it may need refreshing if the source had been unconfirmed.
+        self.refresh_frame_confirmation_indicator()
+
+        summary = (
+            f"✅ Copied {stats['copied']} court annotation(s) across "
+            f"{stats['frames_written']} frame(s)."
+        )
+        if stats["frames_skipped"]:
+            summary += (
+                f"\nSkipped {stats['frames_skipped']} frame(s) that "
+                f"already had court data."
+            )
+        summary += (
+            "\n\nCopied rows are marked unconfirmed — review them on the "
+            "frames that matter before exporting."
+        )
+        information_box(self, message=summary)

@@ -310,3 +310,5 @@ def create_navigation_button(
     )
     btn.clicked.connect(callback)
     return btn
+
+

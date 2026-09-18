@@ -17,6 +17,41 @@ from .schema import (
 )
 from .data import Label, Layer, Annotation, GameStateSegment
 
+GAME_ON_STATES = {"service", "play"}
+
+# TODO: Build a utils for dataset folder.
+def compute_full_court_polygon(back_zone_polygons, frame_width, frame_height):
+    """
+    A volleyball court has two back zones, one per team, each drawn as a
+    polygon near its end of the court. This builds one polygon for the
+    WHOLE court by picking, for each of the image's four corners,
+    whichever point across both back-zone polygons sits closest to it —
+    so the far corner of each back zone (near the baseline, away from
+    the net) becomes a corner of the court.
+
+    `back_zone_polygons` is a list of polygons (each a list of [x, y]
+    pairs) in the media's original pixel coordinates. Returns a 4-point
+    polygon ordered [top-left, bottom-left, bottom-right, top-right], or
+    None if there are no points to work with.
+    """
+    points = [tuple(p) for poly in back_zone_polygons for p in poly]
+    if not points:
+        return None
+
+    corners = [
+        (0, 0),
+        (0, frame_height),
+        (frame_width, frame_height),
+        (frame_width, 0),
+    ]
+
+    polygon = []
+    for cx, cy in corners:
+        closest = min(points, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+        polygon.append([closest[0], closest[1]])
+
+    return polygon
+
 
 def annotation_key(ann: Annotation):
     return (
@@ -64,17 +99,16 @@ class DatabaseManager:
     # ------------------------------------------------------------------
 
     def _migrate_schema(self):
-        """create_all() only creates tables that don't exist yet — it never
-        alters an existing table. This adds any columns a prior version of
-        this file didn't have, so opening an older annotations.db doesn't
-        crash the moment a query touches a new column."""
         inspector = inspect(self.engine)
         existing_cols = {col["name"] for col in inspector.get_columns("annotations")}
+        media_cols = {col["name"] for col in inspector.get_columns("media")}
         with self.engine.begin() as conn:
             if "track_id" not in existing_cols:
                 conn.execute(text("ALTER TABLE annotations ADD COLUMN track_id INTEGER"))
             if "team_id" not in existing_cols:
                 conn.execute(text("ALTER TABLE annotations ADD COLUMN team_id INTEGER"))
+            if "court_coordinates" not in media_cols:
+                conn.execute(text("ALTER TABLE media ADD COLUMN court_coordinates TEXT"))
 
     def _create_default_data(self):
         with self.Session() as session:
@@ -319,6 +353,11 @@ class DatabaseManager:
                 session.add(record)
                 session.commit()
 
+        if layer.name == "court":
+            self.cache_court_coordinates(media_path, frame_number)
+
+
+
     def load_annotations(
             self,
             media_path: str,
@@ -503,6 +542,9 @@ class DatabaseManager:
             if media is None:
                 return
 
+            layer_row = session.get(SQLALayer, layer_id)
+            is_court_layer = bool(layer_row and layer_row.name == "court")
+
             session.query(SQLAAnnotation).filter(
                 SQLAAnnotation.media_id == media.id,
                 SQLAAnnotation.layer_id == layer_id,
@@ -530,6 +572,9 @@ class DatabaseManager:
                 review.confirmed_at = datetime.utcnow()
 
             session.commit()
+
+        if is_court_layer:
+            self.cache_court_coordinates(media_path, frame_number)
 
     def is_frame_confirmed(self, media_path: str, layer_id: int, frame_number: Optional[int]) -> bool:
         with self.Session() as session:
@@ -1017,3 +1062,222 @@ class DatabaseManager:
                 SQLAAnnotation.id == annotation_id
             ).update({"track_id": track_id, "team_id": team_id}, synchronize_session=False)
             session.commit()
+
+    # Court
+
+    def get_court_annotations(
+            self, media_path: str, frame_number: Optional[int],
+    ) -> List[Annotation]:
+        """Court-layer annotations for a single frame — the source
+        geometry used when propagating a court layout to other frames."""
+        with self.Session() as session:
+            layer = (
+                session.query(SQLALayer)
+                .filter(SQLALayer.name == "court")
+                .first()
+            )
+            if layer is None:
+                return []
+
+        return self.load_annotations(
+            media_path=media_path,
+            layer_id=layer.id,
+            frame_number=frame_number,
+        )
+
+    def get_game_on_frames(self, media_path: str) -> List[int]:
+        """Every frame inside a Service or In-Play segment, sorted and
+        de-duplicated. Empty list if the video has no game-state tags."""
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return []
+
+            rows = (
+                session.query(
+                    SQLAGameStateSegment.start_frame,
+                    SQLAGameStateSegment.end_frame,
+                )
+                .filter(
+                    SQLAGameStateSegment.media_id == media.id,
+                    SQLAGameStateSegment.state.in_(GAME_ON_STATES),
+                )
+                .order_by(SQLAGameStateSegment.start_frame)
+                .all()
+            )
+
+        frames: set[int] = set()
+        for start, end in rows:
+            frames.update(range(start, end + 1))
+        return sorted(frames)
+
+    def count_frames_with_court_annotations(
+            self, media_path: str, frame_numbers: List[int],
+    ) -> int:
+        """How many of `frame_numbers` already have at least one court
+        row. Used to warn the user before a bulk overwrite."""
+        if not frame_numbers:
+            return 0
+
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return 0
+
+            layer = session.query(SQLALayer).filter(SQLALayer.name == "court").first()
+            if layer is None:
+                return 0
+
+            count = (
+                session.query(func.count(func.distinct(SQLAAnnotation.frame_number)))
+                .filter(
+                    SQLAAnnotation.media_id == media.id,
+                    SQLAAnnotation.layer_id == layer.id,
+                    SQLAAnnotation.frame_number.in_(frame_numbers),
+                )
+                .scalar()
+            )
+            return int(count or 0)
+
+    def copy_court_annotations_to_frames(
+            self,
+            media_path: str,
+            media_type: str,
+            width: int,
+            height: int,
+            source_frame: Optional[int],
+            target_frames: List[int],
+            mode: str = "replace",  # "replace" | "skip_existing"
+    ) -> dict:
+        """Copy every court-layer annotation from `source_frame` to each
+        frame in `target_frames`. All work happens in one transaction.
+
+        `mode`:
+          - "replace":       overwrite court rows already on a target.
+          - "skip_existing": leave frames that already have court rows.
+
+        Returns {"copied": int, "frames_written": int, "frames_skipped": int}.
+        """
+        stats = {"copied": 0, "frames_written": 0, "frames_skipped": 0}
+
+        source = self.get_court_annotations(media_path, source_frame)
+        if not source:
+            return stats
+
+        # Never rewrite the frame the user is currently looking at.
+        targets = [f for f in target_frames if f != source_frame]
+        if not targets:
+            return stats
+
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                media = Media(
+                    path=media_path, media_type=media_type,
+                    width=width, height=height,
+                )
+                session.add(media)
+                session.commit()
+                session.refresh(media)
+
+            layer = session.query(SQLALayer).filter(SQLALayer.name == "court").first()
+            if layer is None:
+                return stats
+
+            if mode == "skip_existing":
+                existing_rows = (
+                    session.query(SQLAAnnotation.frame_number)
+                    .filter(
+                        SQLAAnnotation.media_id == media.id,
+                        SQLAAnnotation.layer_id == layer.id,
+                        SQLAAnnotation.frame_number.in_(targets),
+                    )
+                    .distinct()
+                    .all()
+                )
+                has_court = {fn for (fn,) in existing_rows}
+            else:
+                has_court = set()
+
+            for frame in targets:
+                if frame in has_court:
+                    stats["frames_skipped"] += 1
+                    continue
+
+                if mode == "replace":
+                    session.query(SQLAAnnotation).filter(
+                        SQLAAnnotation.media_id == media.id,
+                        SQLAAnnotation.layer_id == layer.id,
+                        SQLAAnnotation.frame_number == frame,
+                    ).delete(synchronize_session=False)
+
+                for ann in source:
+                    session.add(SQLAAnnotation(
+                        media_id=media.id,
+                        layer_id=layer.id,
+                        label_id=ann.label.label_id,
+                        frame_number=frame,
+                        shape_type=ann.shape_type,
+                        geometry=json.dumps(ann.geometry),
+                        is_ai_generated=False,  # not model output
+                        confirmed=False,  # not visually verified here
+                        track_id=ann.track_id,
+                        team_id=ann.team_id,
+                    ))
+                    stats["copied"] += 1
+
+                self._reset_frame_review(session, media.id, layer.id, frame)
+                stats["frames_written"] += 1
+
+            session.commit()
+
+        self.cache_court_coordinates(media_path, source_frame)
+
+        return stats
+
+    def cache_court_coordinates(self, media_path: str, frame_number: Optional[int]):
+        """
+        Recomputes this media's canonical court-geometry cache from the
+        court-layer annotations at `frame_number`, grouped by label name
+        ("back zone" -> "back_zone", etc.), and stores it on the Media row —
+        so any caller can get it with one Media lookup instead of a
+        per-frame annotation query.
+        """
+        court_annotations = self.get_court_annotations(media_path, frame_number)
+        if not court_annotations:
+            return
+
+        grouped: dict[str, list] = {}
+        for ann in court_annotations:
+            key = ann.label.name.replace(" ", "_")
+            grouped.setdefault(key, []).append(ann.geometry)
+
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return
+            media.court_coordinates = json.dumps(grouped)
+            session.commit()
+
+    def get_media_court_coordinates(self, media_path: str) -> Optional[dict]:
+        """The cached {"back_zone": [...], "attack_zone": [...], "net": [...]}
+        dict for this media, or None if no court has been cached yet."""
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None or not media.court_coordinates:
+                return None
+            return json.loads(media.court_coordinates)
+
+    def get_media_court_polygon(self, media_path: str) -> Optional[list]:
+        """The whole-court polygon (see compute_full_court_polygon), built
+        from this media's cached back-zone shapes. None if no court has
+        been drawn/published for this media yet."""
+        coords = self.get_media_court_coordinates(media_path)
+        if not coords or not coords.get("back_zone"):
+            return None
+
+        media = self.get_media(media_path)
+        if media is None:
+            return None
+
+        return compute_full_court_polygon(coords["back_zone"], media.width, media.height)

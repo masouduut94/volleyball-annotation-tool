@@ -126,6 +126,10 @@ class GameStateWorker(QObject):
             # segments before persisting, instead of one row per window.
             merged_segments = merge_consecutive_segments(raw_segments)
 
+            persistable_segments = [
+                seg for seg in merged_segments if seg.state != "no-play"
+            ]
+
             self.db.save_game_state_segments(
                 media_path=self.video_path,
                 media_type=self.media_type,
@@ -133,10 +137,10 @@ class GameStateWorker(QObject):
                 height=self.height,
                 start_frame=self.start_frame,
                 end_frame=self.end_frame,
-                segments=merged_segments,
+                segments=persistable_segments,
             )
 
-            self.finished.emit(len(merged_segments))
+            self.finished.emit(len(persistable_segments))
 
         except Exception as e:
             self.error.emit(str(e))

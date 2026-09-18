@@ -49,6 +49,8 @@ class LeftSideBar(QWidget):
     videoMarkEndRequested = pyqtSignal()
     videoCancelRequested = pyqtSignal()
 
+    publishCourtCoordinatesRequested = pyqtSignal()
+
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.setFixedWidth(310)
@@ -67,6 +69,9 @@ class LeftSideBar(QWidget):
         self.frame_tab.layerChanged.connect(self.layerChanged.emit)
         self.frame_tab.labelChanged.connect(self.labelChanged.emit)
         self.frame_tab.toolChanged.connect(self.toolChanged.emit)
+        self.frame_tab.publishCourtCoordinatesRequested.connect(
+            self.publishCourtCoordinatesRequested.emit
+        )
         self.tabs.addTab(self.frame_tab, "Frame Annotations")
 
         self.video_tab = VideoAnnotationTab()
@@ -121,6 +126,8 @@ class FrameAnnotationTab(QWidget):
     layerChanged = pyqtSignal(str)
     labelChanged = pyqtSignal(str)
     toolChanged = pyqtSignal(str)
+
+    publishCourtCoordinatesRequested = pyqtSignal()
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -208,6 +215,24 @@ class FrameAnnotationTab(QWidget):
         tools.addStretch()
         layout.addLayout(tools)
         layout.addWidget(_separator())
+
+        layout.addWidget(_section("Bulk Actions"))
+
+        self.publish_court_btn = QPushButton("Publish court coordinates")
+        self.publish_court_btn.setObjectName("bulkAction")
+        self.publish_court_btn.setFixedHeight(30)
+        self.publish_court_btn.setToolTip(
+            "Copy the court annotations from the current frame to every "
+            "frame inside a Service or In-Play segment of this video."
+        )
+        self.publish_court_btn.clicked.connect(
+            self.publishCourtCoordinatesRequested.emit
+        )
+        layout.addWidget(self.publish_court_btn)
+
+
+
+
         layout.addStretch()
 
     def set_layer(self, layer):
@@ -283,6 +308,15 @@ class FrameAnnotationTab(QWidget):
         idx = names.index(self.current_label) if self.current_label in names else -1
         next_name = names[(idx + 1) % len(names)]
         self.set_label(next_name)
+
+    def set_publish_court_enabled(self, enabled: bool, reason: str = ""):
+        self.publish_court_btn.setEnabled(enabled)
+        self.publish_court_btn.setToolTip(
+            reason or
+            "Copy the court annotations from the current frame to every "
+            "frame inside a Service or In-Play segment of this video."
+        )
+
 
 
 class VideoLabelRow(QWidget):

@@ -13,10 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
-from vb_gui.vb_annotator.ui.theme import Typography
-from vb_gui.vb_annotator.services.job_runner import \
-    run_background_job  # adjust path to match your project root if different
-
+from vb_gui.vb_annotator.services.job_runner import run_background_job
 
 # States that count as "the ball is live" for the purposes of skipping
 # dead time during batch inference. Kept as a module-level constant
@@ -50,36 +47,49 @@ class BatchInferenceWorker(QObject):
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, main_window, selected_models, frame_numbers, mode="replace", parent=None):
+    def __init__(
+            self,
+            main_window,
+            selected_models,
+            frame_numbers,
+            mode="replace",
+            batch_size=None,
+            filter_players_outside_court=False,
+            parent=None
+    ):
         super().__init__(parent)
         self.main_window = main_window
         self.selected_models = selected_models
         self.frame_numbers = frame_numbers
+        self.batch_size = batch_size
         self.mode = mode  # Fix: "replace" or "keep"
+        self.filter_players_outside_court = filter_players_outside_court
         self._cancel_requested = False
+
     def cancel(self):
         self._cancel_requested = True
 
     def run(self):
-        stats = {"frames": 0, "imported": 0, "skipped": 0}  # NEW "skipped"
+        stats = {"frames": 0, "imported": 0, "skipped": 0}
         total = len(self.frame_numbers)
         try:
-            for i, frame_number in enumerate(self.frame_numbers):
-                if self._cancel_requested:
-                    self.cancelled.emit()
-                    return
+            def on_progress(done, tot):
+                self.progress.emit(done, tot)
+                self.status.emit(f"Processed {done}/{tot} frames")
 
-                self.status.emit(f"Processing frame {frame_number}")
-                self.progress.emit(i + 1, total)
+            stats = self.main_window.run_batch_inference_on_frames(
+                frame_numbers=self.frame_numbers,
+                model_keys=self.selected_models,
+                mode=self.mode,
+                batch_size=self.batch_size,
+                progress_callback=on_progress,
+                cancel_check=lambda: self._cancel_requested,
+                filter_players_outside_court=self.filter_players_outside_court
+            )
 
-                imported, skipped = self.main_window.run_batch_inference_on_frame(
-                    frame_number=frame_number,
-                    model_keys=self.selected_models,
-                    mode=self.mode,
-                )
-                stats["frames"] += 1
-                stats["imported"] += imported
-                stats["skipped"] += skipped
+            if self._cancel_requested:
+                self.cancelled.emit()
+                return
 
             self.finished.emit(stats)
         except Exception as e:
@@ -218,9 +228,13 @@ class BatchInferenceDialog(QDialog):
         self.actions_cb = QCheckBox("Actions detection")
         self.players_cb = QCheckBox("Players detection")
 
+        self.filter_court_cb = QCheckBox("    Filter players outside court")
+        self.filter_court_cb.setEnabled(False)
+
         layout.addWidget(self.ball_cb)
         layout.addWidget(self.actions_cb)
         layout.addWidget(self.players_cb)
+        layout.addWidget(self.filter_court_cb)
 
         # --------------------------------------------------
         # Target job
@@ -307,6 +321,38 @@ class BatchInferenceDialog(QDialog):
         layout.addWidget(self.elapsed_label)
 
         # --------------------------------------------------
+        # Batch size (GPU-aware)
+        # --------------------------------------------------
+
+        layout.addSpacing(10)
+
+        batch_title = QLabel("Batch Size (GPU)")
+        layout.addWidget(batch_title)
+
+        batch_row = QHBoxLayout()
+
+        self.auto_batch_cb = QCheckBox("Auto (fit to free VRAM)")
+        self.auto_batch_cb.setChecked(True)
+        self.auto_batch_cb.toggled.connect(self.on_auto_batch_toggled)
+        batch_row.addWidget(self.auto_batch_cb)
+
+        batch_row.addWidget(QLabel("Batch:"))
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setRange(1, 512)
+        self.batch_spin.setValue(1)
+        self.batch_spin.setEnabled(False)
+        batch_row.addWidget(self.batch_spin)
+
+        layout.addLayout(batch_row)
+
+        self.vram_label = QLabel("")
+        self.vram_label.setWordWrap(True)
+        self.vram_label.setStyleSheet("color: #9096A3; font-size: 11px;")
+        layout.addWidget(self.vram_label)
+
+        self._refresh_vram_info()
+
+        # --------------------------------------------------
         # Buttons
         # --------------------------------------------------
 
@@ -328,6 +374,74 @@ class BatchInferenceDialog(QDialog):
 
         self.initialize_frame_range()
         self.update_frame_estimate()
+
+        for cb in (self.ball_cb, self.actions_cb, self.players_cb):
+            cb.toggled.connect(lambda _: self._refresh_vram_info())
+
+        self.players_cb.toggled.connect(self._update_filter_court_enabled)
+        self._update_filter_court_enabled()
+
+    def _update_filter_court_enabled(self, *_):
+        path, _, _ = self.main_window.current_media_info()
+        has_court = bool(path) and bool(self.db.get_media_court_polygon(path))
+
+        enabled = self.players_cb.isChecked() and has_court
+        self.filter_court_cb.setEnabled(enabled)
+
+        if not has_court:
+            self.filter_court_cb.setChecked(False)
+            self.filter_court_cb.setToolTip(
+                "No court has been published for this media yet — draw the "
+                "court layer and use \"Publish court coordinates\" first."
+            )
+        else:
+            self.filter_court_cb.setToolTip(
+                "Drop player detections whose feet fall outside the court."
+            )
+
+    def on_auto_batch_toggled(self, checked):
+        self.batch_spin.setEnabled(not checked)
+        self._refresh_vram_info()
+
+    def _refresh_vram_info(self):
+        """
+        Show what the auto-tuner would pick so the user can see the
+        reasoning before hitting Run. Recomputes when the model set
+        changes so the number reflects the heaviest model selected.
+        """
+        aa = self.main_window.auto_annotator
+
+        if not aa.gpu_available():
+            self.vram_label.setText(
+                "No CUDA GPU detected — running on CPU. "
+                "Batch size will be 1."
+            )
+            self.batch_spin.setValue(1)
+            self.batch_spin.setEnabled(False)
+            self.auto_batch_cb.setChecked(True)
+            return
+
+        free_bytes = aa.free_vram_bytes()
+        free_gb = free_bytes / (1024 ** 3)
+
+        models = self.selected_models()
+        if not models:
+            self.vram_label.setText(f"Free VRAM: {free_gb:.2f} GB")
+            return
+
+        # Auto-tuner uses the *smallest* estimate across selected models,
+        # since a single batch size must fit all of them (they run
+        # sequentially, so we can't just max out the first one).
+        estimates = {m: aa.estimate_batch_size(m) for m in models}
+        safe_batch = min(estimates.values())
+
+        if self.auto_batch_cb.isChecked():
+            self.batch_spin.setValue(safe_batch)
+
+        self.vram_label.setText(
+            f"Free VRAM: {free_gb:.2f} GB — auto batch size: {safe_batch} "
+            f"(per model: {estimates})"
+        )
 
     # ---------------------------------------------------------
     # Frames
@@ -437,7 +551,15 @@ class BatchInferenceDialog(QDialog):
         self._last_status_text = ""
         self._start_elapsed_timer()
 
-        worker = BatchInferenceWorker(self.main_window, models, frame_numbers, mode=mode)  # NEW mode arg
+        batch_size = None if self.auto_batch_cb.isChecked() else self.batch_spin.value()
+        worker = BatchInferenceWorker(
+            self.main_window,
+            models,
+            frame_numbers,
+            mode=mode,
+            batch_size=batch_size,
+            filter_players_outside_court=self.filter_court_cb.isChecked(),
+        )
         worker.progress.connect(self.update_progress)
         worker.status.connect(self._on_worker_status)
 
