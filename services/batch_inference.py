@@ -50,48 +50,38 @@ class BatchInferenceWorker(QObject):
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, main_window, selected_models, frame_numbers, parent=None):
+    def __init__(self, main_window, selected_models, frame_numbers, mode="replace", parent=None):
         super().__init__(parent)
-
         self.main_window = main_window
         self.selected_models = selected_models
         self.frame_numbers = frame_numbers
-
+        self.mode = mode  # Fix: "replace" or "keep"
         self._cancel_requested = False
-
     def cancel(self):
         self._cancel_requested = True
 
     def run(self):
-        stats = {"frames": 0, "imported": 0}
+        stats = {"frames": 0, "imported": 0, "skipped": 0}  # NEW "skipped"
         total = len(self.frame_numbers)
-
         try:
             for i, frame_number in enumerate(self.frame_numbers):
                 if self._cancel_requested:
                     self.cancelled.emit()
                     return
 
-                # status BEFORE progress: both signals cross a thread
-                # boundary as queued connections, so emission order is
-                # preserved on the receiving (dialog) side. Emitting the
-                # frame-number text first means it's already current by
-                # the time update_progress() builds the combined label —
-                # reversing this order would make the label always show
-                # the *previous* frame's number.
                 self.status.emit(f"Processing frame {frame_number}")
                 self.progress.emit(i + 1, total)
 
-                count = self.main_window.run_batch_inference_on_frame(
+                imported, skipped = self.main_window.run_batch_inference_on_frame(
                     frame_number=frame_number,
                     model_keys=self.selected_models,
+                    mode=self.mode,
                 )
-
                 stats["frames"] += 1
-                stats["imported"] += count
+                stats["imported"] += imported
+                stats["skipped"] += skipped
 
             self.finished.emit(stats)
-
         except Exception as e:
             self.error.emit(str(e))
 
@@ -401,32 +391,44 @@ class BatchInferenceDialog(QDialog):
 
     def start_inference(self):
         models = self.selected_models()
-
         if not models:
             QMessageBox.warning(self, "No model selected", "Please select at least one model.")
             return
 
         start, end = self._current_range()
-
         if start > end:
-            QMessageBox.warning(
-                self, "Invalid frame range",
-                "The start frame must be less than or equal to the end frame.",
-            )
+            QMessageBox.warning(self, "Invalid frame range",
+                                "The start frame must be less than or equal to the end frame.")
             return
+
+        # Fix: ask once how to handle frames that already have unconfirmed
+        # AI annotations.
+        # Confirmed / human-drawn annotations are never touched by either choice.
+        box = QMessageBox(self)
+        box.setWindowTitle("Existing AI Annotations")
+        box.setText(
+            "Some frames in this range may already have AI-generated "
+            "annotations waiting for review.\n\n"
+            "Replace them with the new results, or leave those frames "
+            "untouched and only fill in frames that have nothing yet?"
+        )
+        replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
+        keep_btn = box.addButton("Keep Existing", QMessageBox.ButtonRole.RejectRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked not in (replace_btn, keep_btn):
+            return
+        mode = "replace" if clicked is replace_btn else "keep"
 
         if self.game_on_checkbox.isChecked() and self.game_state_segments:
             frame_numbers = self._game_on_frames_in_range(start, end)
             if not frame_numbers:
-                QMessageBox.information(
-                    self, "No Matching Frames",
-                    "No Service/In-Play frames were found in the selected range.",
-                )
+                QMessageBox.information(self, "No Matching Frames",
+                                        "No Service/In-Play frames were found in the selected range.")
                 return
         else:
-            # range(), not list(range(...)) — for a large "all frames" run
-            # there's no reason to materialize the full frame list up
-            # front just to iterate it once in the worker.
             frame_numbers = range(start, end + 1)
 
         self.run_btn.setEnabled(False)
@@ -435,24 +437,14 @@ class BatchInferenceDialog(QDialog):
         self._last_status_text = ""
         self._start_elapsed_timer()
 
-        worker = BatchInferenceWorker(self.main_window, models, frame_numbers)
-
-        # BatchInferenceWorker.progress carries (done, total) and this
-        # dialog has its own inline progress bar/label rather than a
-        # separate ExportProgressDialog, so wire those two directly
-        # instead of going through run_background_job's generic
-        # set_progress(int) auto-connect.
+        worker = BatchInferenceWorker(self.main_window, models, frame_numbers, mode=mode)  # NEW mode arg
         worker.progress.connect(self.update_progress)
         worker.status.connect(self._on_worker_status)
 
         self._job = run_background_job(
-            parent=self,
-            worker=worker,
-            progress_dialog=self,  # only used for .show(); we handle progress/cancel ourselves
-            on_finished=self.on_finished,
-            on_cancelled=self.on_cancelled,
-            on_error=self.on_error,
-            connect_progress=False,
+            parent=self, worker=worker, progress_dialog=self,
+            on_finished=self.on_finished, on_cancelled=self.on_cancelled,
+            on_error=self.on_error, connect_progress=False,
         )
 
     def _on_worker_status(self, text):
@@ -473,14 +465,15 @@ class BatchInferenceDialog(QDialog):
         self._job = None
         self._stop_elapsed_timer()
 
-        QMessageBox.information(
-            self,
-            "Batch inference complete",
-            (
-                f"Frames processed: {stats['frames']}\n"
-                f"Annotations imported: {stats['imported']}"
-            ),
+        msg = (
+            f"Frames processed: {stats['frames']}\n"
+            f"Annotations imported: {stats['imported']}"
         )
+        if stats["skipped"]:
+            msg += f"\nSkipped (already had unreviewed AI annotations or exact duplicates): {stats['skipped']}"
+
+        QMessageBox.information(self, "Batch inference complete", msg)
+        self.main_window.load_annotations()
 
         self.main_window.load_annotations()
 

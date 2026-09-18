@@ -264,12 +264,15 @@ class BulkCreateAnnotationCommand(QUndoCommand):
         self.db_ids = None
 
     def redo(self):
-        # Insert (or re-insert, after a prior undo) and remember the ids
-        self.db_ids = self.db.insert_ai_annotations(
+        self.db_ids, skipped = self.db.insert_ai_annotations(
             self.media_path, self.media_type, self.width, self.height,
             self.layer, self.frame_number, self.annotations_for_db,
         )
+        self.skipped_count = skipped  # NEW — exposed so the caller can report it
+
         for record, db_id in zip(self.records, self.db_ids):
+            if db_id is None:
+                continue  # exact duplicate of an existing shape — don't add a second copy to the scene
             record["annotation_id"] = db_id
             if record["item"].scene() is None:
                 self.scene.addItem(record["item"])
@@ -280,10 +283,13 @@ class BulkCreateAnnotationCommand(QUndoCommand):
         self.scene._unconfirm_frame_for_layer(self.layer_name)
 
     def undo(self):
-        if self.db_ids:
-            self.db.delete_annotations_by_ids(self.db_ids)
+        real_ids = [i for i in (self.db_ids or []) if i is not None]
+        if real_ids:
+            self.db.delete_annotations_by_ids(real_ids)
 
-        for record in self.records:
+        for record, db_id in zip(self.records, self.db_ids or []):
+            if db_id is None:
+                continue  # was never added to the scene, nothing to remove
             self.scene.removeItem(record["item"])
             if record in self.scene.layer_items[self.layer_name]:
                 self.scene.layer_items[self.layer_name].remove(record)

@@ -400,14 +400,14 @@ class DatabaseManager:
 
     def insert_ai_annotations(
             self,
-            media_path: str,
-            media_type: str,
-            width: int,
-            height: int,
-            layer: Layer,
-            frame_number: Optional[int],
-            annotations: List[Annotation],
-    ) -> List[int]:
+            media_path,
+            media_type,
+            width,
+            height,
+            layer,
+            frame_number,
+            annotations
+    ):
         """
         Insert a batch of AI-generated annotations immediately — unlike
         save_annotations(), this does NOT wipe existing rows for the
@@ -418,36 +418,51 @@ class DatabaseManager:
         so the caller (BulkCreateAnnotationCommand) can undo exactly this
         batch by id, without touching anything a human confirmed later.
         """
+        annotations = remove_duplicate_annotations(annotations)
+
         with self.Session() as session:
             media = session.query(Media).filter(Media.path == media_path).first()
-
             if media is None:
                 media = Media(path=media_path, media_type=media_type, width=width, height=height)
                 session.add(media)
                 session.commit()
                 session.refresh(media)
 
-            ids = []
+            existing = {
+                (label_id, shape_type, json.dumps(json.loads(geometry), sort_keys=True))
+                for label_id, shape_type, geometry in session.query(
+                    SQLAAnnotation.label_id, SQLAAnnotation.shape_type, SQLAAnnotation.geometry
+                ).filter(
+                    SQLAAnnotation.media_id == media.id,
+                    SQLAAnnotation.layer_id == layer.layer_id,
+                    SQLAAnnotation.frame_number == frame_number,
+                )
+            }
+
+            ids, skipped = [], 0
             for ann in annotations:
+                sig = (ann.label.label_id, ann.shape_type, json.dumps(ann.geometry, sort_keys=True))
+                if sig in existing:
+                    ids.append(None)  # keeps ids aligned 1:1 with `annotations` for the caller
+                    skipped += 1
+                    continue
                 record = SQLAAnnotation(
-                    media_id=media.id,
-                    layer_id=layer.layer_id,
-                    label_id=ann.label.label_id,
-                    frame_number=frame_number,
-                    shape_type=ann.shape_type,
-                    geometry=json.dumps(ann.geometry),
-                    is_ai_generated=True,
-                    confirmed=False,
+                    media_id=media.id, layer_id=layer.layer_id, label_id=ann.label.label_id,
+                    frame_number=frame_number, shape_type=ann.shape_type,
+                    geometry=json.dumps(ann.geometry), is_ai_generated=True, confirmed=False,
                 )
                 session.add(record)
                 session.commit()
                 session.refresh(record)
                 ids.append(record.id)
+                existing.add(sig)
 
-            # New unconfirmed detections invalidate any prior human sign-off
+            if skipped:
+                print(f"[auto-annotate] skipped {skipped} duplicate annotation(s) "
+                      f"already present for layer={layer.name} frame={frame_number}")
+
             self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
-
-            return ids
+            return ids, skipped
 
     def delete_annotations_by_ids(self, ids: List[int]):
         """Delete specific annotation rows by id — used to undo an AI batch
@@ -901,28 +916,28 @@ class DatabaseManager:
 
         session.flush()
 
-    def replace_ai_annotations(
-            self,
-            media_path: str,
-            media_type: str,
-            width: int,
-            height: int,
-            layer: Layer,
-            frame_number: Optional[int],
-            annotations: List[Annotation],
-    ) -> List[int]:
+    def has_ai_annotations(self, media_path: str, layer_id: int, frame_number: Optional[int]) -> bool:
         """
-        Used by batch inference. Deletes only the UNCONFIRMED rows
-        currently stored for this (media, layer, frame), then inserts the
-        fresh batch as is_ai_generated=True, confirmed=False.
+        Cheap existence check for batch inference's 'keep existing' mode —
+        True if this (media, layer, frame) already has any AI-generated row,
+        confirmed or not.
+        """
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                return False
+            return session.query(
+                session.query(SQLAAnnotation.id).filter(
+                    SQLAAnnotation.media_id == media.id,
+                    SQLAAnnotation.layer_id == layer_id,
+                    SQLAAnnotation.frame_number == frame_number,
+                    SQLAAnnotation.is_ai_generated == True,  # noqa: E712
+                ).exists()
+            ).scalar()
 
-        Deleting unconfirmed rows first prevents re-running a batch job
-        over the same range from piling up duplicate, un-reviewed
-        detections on top of the previous run's guesses. Rows a human has
-        already confirmed are left completely untouched — batch inference
-        should refresh what hasn't been reviewed yet, never silently
-        erase reviewed work.
-        """
+    def replace_ai_annotations(self, media_path, media_type, width, height, layer, frame_number, annotations):
+        annotations = remove_duplicate_annotations(annotations)  # NEW — same guard save_annotations() already has
+
         with self.Session() as session:
             media = session.query(Media).filter(Media.path == media_path).first()
             if media is None:
@@ -935,26 +950,41 @@ class DatabaseManager:
                 SQLAAnnotation.media_id == media.id,
                 SQLAAnnotation.layer_id == layer.layer_id,
                 SQLAAnnotation.frame_number == frame_number,
-                SQLAAnnotation.confirmed == False,  # noqa: E712 — SQLAlchemy requires `== False`
+                SQLAAnnotation.confirmed == False,  # Fix
+                SQLAAnnotation.is_ai_generated == True,
+                # Fix: never delete a human row even if unconfirmed
             ).delete(synchronize_session=False)
 
-            ids = []
+            # Fix — signatures of whatever is still there (confirmed rows,
+            # mainly) so a fresh detection that happens to match one exactly
+            # gets skipped instead of blowing up the whole frame.
+            existing = {
+                (label_id, shape_type, json.dumps(json.loads(geometry), sort_keys=True))
+                for label_id, shape_type, geometry in session.query(
+                    SQLAAnnotation.label_id, SQLAAnnotation.shape_type, SQLAAnnotation.geometry
+                ).filter(
+                    SQLAAnnotation.media_id == media.id,
+                    SQLAAnnotation.layer_id == layer.layer_id,
+                    SQLAAnnotation.frame_number == frame_number,
+                )
+            }
+
+            ids, skipped = [], 0
             for ann in annotations:
+                sig = (ann.label.label_id, ann.shape_type, json.dumps(ann.geometry, sort_keys=True))
+                if sig in existing:
+                    skipped += 1
+                    continue
                 record = SQLAAnnotation(
-                    media_id=media.id,
-                    layer_id=layer.layer_id,
-                    label_id=ann.label.label_id,
-                    frame_number=frame_number,
-                    shape_type=ann.shape_type,
-                    geometry=json.dumps(ann.geometry),
-                    is_ai_generated=True,
-                    confirmed=False,
+                    media_id=media.id, layer_id=layer.layer_id, label_id=ann.label.label_id,
+                    frame_number=frame_number, shape_type=ann.shape_type,
+                    geometry=json.dumps(ann.geometry), is_ai_generated=True, confirmed=False,
                 )
                 session.add(record)
                 session.commit()
                 session.refresh(record)
                 ids.append(record.id)
+                existing.add(sig)
 
             self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
-
-            return ids
+            return ids, skipped

@@ -409,6 +409,18 @@ class RightSidebar(QWidget):
         main_layout.addWidget(self.actions_row)
 
         # -----------------------------------------------------
+        # Configure Job
+        # -----------------------------------------------------
+
+        self.configure_button = QPushButton("Quick Annotate")
+        self.configure_button.setIcon(QIcon("./resources/icons/right_sidebar/thunder.png"))
+        self.configure_button.setIconSize(QSize(25, 25))
+        self.configure_button.setFixedHeight(38)
+        self.configure_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.configure_button.clicked.connect(self.configureJobRequested.emit)
+        main_layout.addWidget(self.configure_button)
+
+        # -----------------------------------------------------
         # Separator
         # -----------------------------------------------------
 
@@ -444,28 +456,8 @@ class RightSidebar(QWidget):
         main_layout.addWidget(separator)
 
         # -----------------------------------------------------
-        # Separator
+        # Annotation Status box
         # -----------------------------------------------------
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        main_layout.addWidget(separator)
-
-        # -----------------------------------------------------
-        # Configure Job
-        # -----------------------------------------------------
-
-        self.configure_button = QPushButton("Quick Annotate")
-        self.configure_button.setIcon(QIcon("./resources/icons/right_sidebar/thunder.png"))
-        self.configure_button.setIconSize(QSize(25, 25))
-        self.configure_button.setFixedHeight(38)
-        self.configure_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.configure_button.clicked.connect(self.configureJobRequested.emit)
-        main_layout.addWidget(self.configure_button)
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        main_layout.addWidget(separator)
 
         section_title3 = QLabel("Annotation Status")
         section_title3.setFont(QFont("Arial", 12, QFont.Weight.Bold))

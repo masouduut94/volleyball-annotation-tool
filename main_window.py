@@ -696,38 +696,37 @@ class MainWindow(QMainWindow):
         statuses = self.db.get_frame_layer_statuses(path, frame)
         self.right_sidebar.set_annotation_statuses(statuses)
 
-    def run_batch_inference_on_frame(self, frame_number, model_keys):
+    def run_batch_inference_on_frame(self, frame_number, model_keys, mode="replace"):
         imported_total = 0
+        skipped_total = 0
         frame = self.get_frame_by_number(frame_number)
+        path, media_type, _ = self.current_media_info()
 
         for model_key in model_keys:
-            result = self.auto_annotator.predict(model_key, frame)
-
             layer = self.db.get_layer(model_key)
 
-            annotations, imported = self.convert_result_to_annotations(result, layer)
-            path, media_type, _ = self.current_media_info()
+            # "keep" mode: don't touch a frame/layer that already has
+            # unreviewed AI work sitting in it — just skip and count it,
+            # rather than diffing every shape.
+            if mode == "keep" and self.db.has_ai_annotations(path, layer.layer_id, frame_number):
+                skipped_total += 1
+                continue
+
+            result = self.auto_annotator.predict(model_key, frame)
+            annotations, _ = self.convert_result_to_annotations(result, layer)
 
             if len(annotations) == 0:
                 continue
 
-            # NEW — was save_annotations(), which ignores is_ai_generated/
-            # confirmed entirely and always writes rows using the column
-            # defaults (is_ai_generated=False, confirmed=True). That's why
-            # batch-inferred boxes showed up as "User" in the sidebar.
-            self.db.replace_ai_annotations(
-                media_path=path,
-                media_type=media_type,
-                width=self.original_width,
-                height=self.original_height,
-                layer=layer,
-                frame_number=frame_number,
-                annotations=annotations,
+            ids, skipped = self.db.replace_ai_annotations(
+                media_path=path, media_type=media_type,
+                width=self.original_width, height=self.original_height,
+                layer=layer, frame_number=frame_number, annotations=annotations,
             )
+            imported_total += len(ids)
+            skipped_total += skipped
 
-            imported_total += imported
-
-        return imported_total
+        return imported_total, skipped_total
 
     def open_batch_inference(self):
         if self.video_path is None and len(self.image_paths) == 0:
