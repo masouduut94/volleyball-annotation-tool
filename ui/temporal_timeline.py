@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 
 from .theme.colors import Colors
 from .theme.theme_manager import ThemeManager
+from .utils import create_navigation_button
 
 STATE_COLORS = {
     "service": "#FF7A29",
@@ -419,6 +420,88 @@ class TimelineCanvas(QWidget):
         self._drag_segment = None
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
+    # ---------------- Boundary / state navigation ----------------
+
+    def _sorted_segments(self):
+        return sorted(self.segments, key=lambda s: s.start_frame)
+
+    def _segment_at_frame(self, frame):
+        for seg in self.segments:
+            if seg.start_frame <= frame <= seg.end_frame:
+                return seg
+        return None
+
+    def _next_segment_after(self, frame):
+        """Earliest segment that starts strictly after `frame`, or None."""
+        candidates = [s for s in self._sorted_segments() if s.start_frame > frame]
+        return min(candidates, key=lambda s: s.start_frame) if candidates else None
+
+    def _prev_segment_before(self, frame):
+        """Latest segment that ends strictly before `frame`, or None."""
+        candidates = [s for s in self._sorted_segments() if s.end_frame < frame]
+        return max(candidates, key=lambda s: s.end_frame) if candidates else None
+
+    def _seek(self, frame):
+        frame = max(0, min(self.max_frame, frame))
+        if frame != self.current_frame:
+            self.current_frame = frame
+            self.seekRequested.emit(frame)
+            self.update()
+
+    def jump_to_next_boundary(self):
+        """
+        If the playhead sits inside a tagged segment, jump to that
+        segment's end frame. If it's already there (or sitting in an
+        untagged gap), jump to the start of whatever segment comes next
+        — so repeated clicks always keep moving forward through the
+        timeline instead of getting stuck.
+        """
+        frame = self.current_frame
+        seg = self._segment_at_frame(frame)
+
+        if seg is not None and seg.end_frame > frame:
+            self._seek(seg.end_frame)
+            return
+
+        nxt = self._next_segment_after(frame)
+        if nxt is not None:
+            self._seek(nxt.start_frame)
+
+    def jump_to_previous_boundary(self):
+        """Mirror of jump_to_next_boundary, moving backward."""
+        frame = self.current_frame
+        seg = self._segment_at_frame(frame)
+
+        if seg is not None and seg.start_frame < frame:
+            self._seek(seg.start_frame)
+            return
+
+        prev = self._prev_segment_before(frame)
+        if prev is not None:
+            self._seek(prev.end_frame)
+
+    def jump_to_next_state(self, state: str):
+        """Jump to the start of the nearest upcoming segment tagged
+        `state` (e.g. 'play' for In-Play)."""
+        frame = self.current_frame
+        candidates = [
+            s for s in self._sorted_segments()
+            if s.state == state and s.start_frame > frame
+        ]
+        if candidates:
+            self._seek(min(candidates, key=lambda s: s.start_frame).start_frame)
+
+    def jump_to_previous_state(self, state: str):
+        """Jump to the start of the nearest preceding segment tagged
+        `state`."""
+        frame = self.current_frame
+        candidates = [
+            s for s in self._sorted_segments()
+            if s.state == state and s.end_frame < frame
+        ]
+        if candidates:
+            self._seek(max(candidates, key=lambda s: s.end_frame).start_frame)
+
 
 class TemporalTimelinePanel(QWidget):
     """Collapsible container: header (toggle + zoom + apply/cancel/delete) + scrollable canvas."""
@@ -455,12 +538,54 @@ class TemporalTimelinePanel(QWidget):
         h_layout.addWidget(self.toggle_btn)
         h_layout.addStretch()
 
-        h_layout.addWidget(QLabel("Zoom"))
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setRange(1, 60)  # pixels-per-frame * 10
         self.zoom_slider.setValue(20)
         self.zoom_slider.setFixedWidth(120)
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
+
+        self.canvas = TimelineCanvas()
+        self.canvas.set_pixels_per_frame(self.zoom_slider.value() / 10.0)
+        self.canvas.seekRequested.connect(self.seekRequested.emit)
+        self.canvas.intervalSelected.connect(self._on_interval_selected)
+        self.canvas.pendingEditsChanged.connect(self._on_pending_changed)
+
+        # ---- NEW: boundary / in-play navigation ----
+        self.prev_inplay_btn = create_navigation_button(
+            tooltip="Previous In-Play segment",
+            icon_path="./resources/icons/bottom_toolbar/prevprev.png",
+            callback=lambda: self.canvas.jump_to_previous_state("play"),
+            object_name="navigationButton",
+            icon_size=18,
+        )
+        self.prev_boundary_btn = create_navigation_button(
+            tooltip="Jump to start of current segment",
+            icon_path="./resources/icons/bottom_toolbar/prev.png",
+            callback=self.canvas.jump_to_previous_boundary,
+            object_name="navigationButton",
+            icon_size=18,
+        )
+        self.next_boundary_btn = create_navigation_button(
+            tooltip="Jump to end of current segment",
+            icon_path="./resources/icons/bottom_toolbar/next.png",
+            callback=self.canvas.jump_to_next_boundary,
+            object_name="navigationButton",
+            icon_size=18,
+        )
+        self.next_inplay_btn = create_navigation_button(
+            tooltip="Next In-Play segment",
+            icon_path="./resources/icons/bottom_toolbar/nextnext.png",
+            callback=lambda: self.canvas.jump_to_next_state("play"),
+            object_name="navigationButton",
+            icon_size=18,
+        )
+
+        h_layout.addWidget(self.prev_inplay_btn)
+        h_layout.addWidget(self.prev_boundary_btn)
+        h_layout.addWidget(self.next_boundary_btn)
+        h_layout.addWidget(self.next_inplay_btn)
+
+        h_layout.addWidget(QLabel("Zoom"))
         h_layout.addWidget(self.zoom_slider)
 
         self.follow_checkbox = QCheckBox("Follow Playhead")
@@ -502,12 +627,6 @@ class TemporalTimelinePanel(QWidget):
         self.scroll_area.setFixedHeight(total_h + 4)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        self.canvas = TimelineCanvas()
-        self.canvas.set_pixels_per_frame(self.zoom_slider.value() / 10.0)
-        self.canvas.seekRequested.connect(self.seekRequested.emit)
-        self.canvas.intervalSelected.connect(self._on_interval_selected)
-        self.canvas.pendingEditsChanged.connect(self._on_pending_changed)
 
         self.scroll_area.setWidget(self.canvas)
         content_layout.addWidget(self.scroll_area)

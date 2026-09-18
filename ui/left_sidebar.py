@@ -51,7 +51,7 @@ class LeftSideBar(QWidget):
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(305)
+        self.setFixedWidth(310)
 
         self.setObjectName("leftSidebar")
         register_themed_widget(self, left_sidebar_style)
