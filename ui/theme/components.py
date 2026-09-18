@@ -160,27 +160,39 @@ def nav_row_button(scope: str) -> str:
 
 
 def label_button(scope: str) -> str:
+    """Label buttons in the left sidebar. Active state mirrors layer_row's
+    look: a tinted accent background + left accent border, rather than a
+    boxed outline, so the two "currently selected" indicators in this
+    panel (layer vs. label) read as the same visual language."""
     return f"""
     #{scope} QPushButton#labelButton {{
         background: transparent;
         border: none;
-        padding: 8px 10px;
+        border-left: 3px solid transparent;
+        padding: 8px 10px 8px 7px;
         text-align: left;
         border-radius: 8px;
         color: {Colors.TEXT_PRIMARY};
     }}
 
     #{scope} QPushButton#labelButton:hover {{
-        background: {Colors.ACCENT};
-        color: white;
+        background: {Colors.BG_HOVER};
     }}
 
     #{scope} QPushButton#activeLabel {{
-        background: {Colors.BG_SURFACE};
-        border: 1px solid {Colors.ACCENT};
+        background: {Colors.with_alpha(Colors.ACCENT, 40)};
+        border: none;
+        border-left: 3px solid {Colors.ACCENT};
         border-radius: 8px;
+        padding: 8px 10px 8px 7px;
+        text-align: left;
         color: {Colors.TEXT_BRIGHT};
         font-weight: {Typography.WEIGHT_BOLD_QSS};
+    }}
+
+    #{scope} QPushButton#activeLabel:hover {{
+        background: {Colors.ACCENT};
+        color: white;
     }}
     """
 

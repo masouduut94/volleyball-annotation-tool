@@ -189,10 +189,13 @@ class TimelineCanvas(QWidget):
 
     def _format_time(self, frame):
         fps = self.fps if self.fps > 0 else 30.0
-        total_seconds = frame / fps
-        m = int(total_seconds // 60)
-        s = total_seconds - m * 60
-        return f"{m}:{s:05.2f}"
+        total_seconds = int(frame / fps)
+
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     # ---------------- Painting ----------------
 

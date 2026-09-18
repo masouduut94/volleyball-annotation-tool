@@ -16,7 +16,7 @@ The chosen theme persists across launches via QSettings.
 """
 
 from PyQt6.QtCore import QObject, pyqtSignal, QSettings
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from .colors import Colors
 from .palettes import PALETTES
@@ -84,3 +84,27 @@ def register_themed_widget(widget, style_fn):
     """
     widget.setStyleSheet(style_fn())
     ThemeManager.instance().themeChanged.connect(lambda _: widget.setStyleSheet(style_fn()))
+
+def repolish(widget: QWidget):
+    """
+    Fully re-evaluate `widget`'s stylesheet AND every one of its
+    descendants, then repaint.
+
+    QWidget.style().unpolish()/polish() only recomputes the ONE widget
+    it's called on. That's enough for a rule that targets the widget
+    directly ("#foo[active=true] { background: ... }"), but it does
+    nothing for a rule that targets a DESCENDANT of it
+    ("#foo[active=true] QPushButton { color: ... }") — the child keeps
+    rendering stale styling until something else forces a full-tree
+    restyle (which is exactly why toggling the app theme "fixes" a
+    stuck row: QApplication.setStyleSheet() repolishes every widget in
+    the app, children included).
+
+    Any code that flips a dynamic property or objectName used inside a
+    descendant-combinator selector should call this instead of hand
+    rolling unpolish()/polish() on a single widget.
+    """
+    for w in (widget, *widget.findChildren(QWidget)):
+        w.style().unpolish(w)
+        w.style().polish(w)
+        w.update()

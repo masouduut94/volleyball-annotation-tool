@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, QElapsedTimer
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton
 
 
@@ -49,11 +49,45 @@ class ExportProgressDialog(QDialog):
 
         layout.addWidget(self.progress_bar)
 
+        self.elapsed_label = QLabel("Elapsed: 00:00:00")
+
+        layout.addWidget(self.elapsed_label)
+
         self.cancel_button = QPushButton("Cancel")
 
         layout.addWidget(self.cancel_button)
 
         self._cancelled = False
+
+        # Elapsed-time tracking: a QElapsedTimer for accurate monotonic
+        # timing, driven by a QTimer that ticks once a second to refresh
+        # the label.
+        self._elapsed_timer = QElapsedTimer()
+        self._elapsed_timer.start()
+
+        self._elapsed_refresh_timer = QTimer(self)
+        self._elapsed_refresh_timer.setInterval(1000)
+        self._elapsed_refresh_timer.timeout.connect(self._update_elapsed_label)
+        self._elapsed_refresh_timer.start()
+
+        # Show 00:00:00 immediately instead of waiting a full second.
+        self._update_elapsed_label()
+
+    # ==========================================================
+
+    def _update_elapsed_label(self):
+        total_seconds = self._elapsed_timer.elapsed() // 1000
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.elapsed_label.setText(f"Elapsed: {hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    # ==========================================================
+
+    def _stop_elapsed_timer(self):
+        # Freeze the label at the final time rather than leaving it
+        # ticking after the job is done/cancelled/errored.
+        self._update_elapsed_label()
+        self._elapsed_refresh_timer.stop()
 
     # ==========================================================
 
@@ -70,12 +104,14 @@ class ExportProgressDialog(QDialog):
         self.status_label.setText(self._finished_text)
         self.progress_bar.setValue(100)
         self.cancel_button.setEnabled(False)
+        self._stop_elapsed_timer()
 
     # ==========================================================
 
     def set_cancelled(self):
         self.status_label.setText(self._cancelled_text)
         self.cancel_button.setEnabled(False)
+        self._stop_elapsed_timer()
 
     # ==========================================================
 
@@ -83,3 +119,4 @@ class ExportProgressDialog(QDialog):
         self.status_label.setText(self._error_text)
         self.cancel_button.setEnabled(False)
         self.error_message = message
+        self._stop_elapsed_timer()

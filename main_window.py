@@ -33,6 +33,7 @@ from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.undo_manager import DeleteAnnotationCommand
+from ui.database_management_dialog import DatabaseManagementDialog
 
 from ui.theme.colors import Colors
 from ui.theme.theme_manager import ThemeManager
@@ -312,6 +313,14 @@ class MainWindow(QMainWindow):
 
     def cycle_video_label(self):
         self.left_toolbar.cycle_video_label()
+
+    def open_database_management(self):
+        dialog = DatabaseManagementDialog(
+            db_path=self.db.db_path,
+            parent=self,
+        )
+
+        dialog.exec()
 
     # ---------------------------------------------------------
     # Image loading

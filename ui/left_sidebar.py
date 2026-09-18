@@ -9,13 +9,14 @@ Two tabs:
     happens on the Temporal Timeline panel, not here.
 """
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QFrame, QTabWidget)
 from .utils import create_navigation_button
 from .temporal_timeline import STATE_COLORS
 from .theme.theme import left_sidebar_style
-from .theme.theme_manager import register_themed_widget
+from .theme.theme_manager import register_themed_widget, repolish
+
 
 def _separator():
     line = QFrame()
@@ -215,8 +216,6 @@ class FrameAnnotationTab(QWidget):
 
         for name, row in self.layer_rows.items():
             row.set_active(name == layer)
-            row.style().unpolish(row)
-            row.style().polish(row)
 
         self.rebuild_labels()
 
@@ -292,7 +291,8 @@ class VideoLabelRow(QWidget):
     def __init__(self, key, display, color):
         super().__init__()
         self.key = key
-        self.setObjectName("videoLabelRow")   # NEW
+        self.setObjectName("videoLabelRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -311,15 +311,25 @@ class VideoLabelRow(QWidget):
         self.set_active(False)
 
     def set_active(self, active):
-        # NEW — same property-based approach as LayerRow, replacing the
-        # inline "background:#E95420" / "background:transparent" hack.
         self.setProperty("active", "true" if active else "false")
-        self.style().unpolish(self)
-        self.style().polish(self)
+        repolish(self)
 
     def setEnabled(self, enabled):
         super().setEnabled(enabled)
         self.name_btn.setEnabled(enabled)
+
+    # The container's own ":hover { background: ACCENT }" paints fine
+    # once WA_StyledBackground is set, but ":hover QPushButton { color:
+    # white }" is a descendant rule depending on THIS widget's hover
+    # state at the moment the child repaints. Rather than trust that
+    # timing across Qt/platform versions, force it explicitly.
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        repolish(self)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        repolish(self)
 
 
 class VideoAnnotationTab(QWidget):
@@ -435,7 +445,12 @@ class LayerRow(QWidget):
         super().__init__()
         self.layer_name = layer_name
         self.visible = True
-        self.setObjectName("layerRow")   # NEW
+        self.setObjectName("layerRow")
+
+        # A plain QWidget never paints stylesheet background/border on
+        # its own — without this, #layerRow's active-highlight and
+        # hover rules are parsed but silently never drawn.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -449,11 +464,9 @@ class LayerRow(QWidget):
 
     def set_active(self, active: bool):
         self.setProperty("active", "true" if active else "false")
-
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
+        # Repolishes self AND the child button in one call — see
+        # theme_manager.repolish for why the child needs it too.
+        repolish(self)
 
 class LabelRow(QPushButton):
     def __init__(self, name, color):

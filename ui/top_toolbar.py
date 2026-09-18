@@ -37,12 +37,19 @@ class TopToolbar(QToolBar):
         self.export_videomae_action.triggered.connect(self.main_window.export_videomae)
         self.export_menu.addAction(self.export_videomae_action)
 
+        self.database_action = QAction("DB management", self)
+        self.database_action.triggered.connect(
+            self.main_window.open_database_management
+        )
+
+
     def _add_actions_to_toolbar(self):
         self.addAction(self.open_images_action)
         self.addAction(self.open_video_action)
         self.addAction(self.clear_action)
         self.addAction(self.save_action)
         self.addSeparator()
+        self.addAction(self.database_action)
         self.addAction(self.export_menu.menuAction())
 
     def _add_theme_switcher(self):
