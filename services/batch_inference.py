@@ -569,6 +569,17 @@ class BatchInferenceDialog(QDialog):
             on_error=self.on_error, connect_progress=False,
         )
 
+    def closeEvent(self, event):
+        if self._job is not None:
+            # A job is running — hide instead of actually closing, so the
+            # background thread (parented to this dialog) survives. Reopen
+            # via Ctrl+Shift+A or the sidebar button, which reuses this
+            # exact instance (see MainWindow.open_batch_inference).
+            event.ignore()
+            self.hide()
+            return
+        super().closeEvent(event)
+
     def _on_worker_status(self, text):
         self._last_status_text = text
 

@@ -1,12 +1,14 @@
-import math
+import os
+import shutil
+import tempfile
 import cv2
 import numpy as np
 from typing import Optional
 
-from PyQt6.QtCore import QThread, QTimer, QPointF
+from PyQt6.QtCore import QTimer, QPointF, Qt
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog,
-                             QDialog, QMessageBox)
+                             QDialog, QMessageBox, QLabel)
 
 from graphics_view import GraphicsView
 from graphics_scene import AnnotationScene, ToolMode
@@ -22,7 +24,7 @@ from services.game_state_classifier import GameStateClassifier
 from services.videomae_export_worker import VideoMAEExportWorker
 from services.job_runner import run_background_job
 
-from ui.utils import information_box
+from ui.utils import information_box, points_inside_polygon
 from ui.top_toolbar import TopToolbar
 from ui.left_sidebar import LeftSideBar
 from ui.right_sidebar import RightSidebar
@@ -34,7 +36,7 @@ from ui.export_progress_dialog import ExportProgressDialog
 from ui.annotation_stats_dialog import AnnotationStatsDialog
 from ui.export_dialog import YOLOExportDialog, ExportSummaryDialog
 from ui.undo_manager import DeleteAnnotationCommand
-from ui.database_management_dialog import DatabaseManagementDialog
+from ui.db_cleanuo_dialog import DBCleanupDialog
 
 from ui.theme.colors import Colors
 from ui.theme.theme_manager import ThemeManager
@@ -60,6 +62,8 @@ class MainWindow(QMainWindow):
         self.db = DatabaseManager(db_path=db_path)
         # Auto-Annotators (YOLO + VideoMAE)
         self.auto_annotator = AutoAnnotator(self.db)
+        # trigger JIT compile now, not mid-job
+        points_inside_polygon(np.zeros((1, 2)), np.zeros((4, 2)))
         self.game_state_classifier = GameStateClassifier()
         gs_path = self.db.get_model_path("game_state")
         if gs_path:
@@ -68,6 +72,7 @@ class MainWindow(QMainWindow):
         self.image_paths = []
         self.current_index = 0
 
+        self._batch_dialog = None
         self.video_path = None
         self.cap = None
         self.total_frames = 0
@@ -97,16 +102,17 @@ class MainWindow(QMainWindow):
 
         self._tag_pending_start = None
         self._tag_pending_state = None
+        self._layer_dirty = False
 
         self._create_ui()
 
         # Bottom toolbar
-        QShortcut(QKeySequence("A"), self, activated=self.previous_frame)
-        QShortcut(QKeySequence("D"), self, activated=self.next_frame)
-        QShortcut(QKeySequence("Left"), self, activated=self.previous_frame)
-        QShortcut(QKeySequence("Right"), self, activated=self.next_frame)
-        QShortcut(QKeySequence("Q"), self, activated=self.previous_15_frame)
-        QShortcut(QKeySequence("E"), self, activated=self.next_15_frame)
+        QShortcut(QKeySequence("A"), self, activated=self.previous)
+        QShortcut(QKeySequence("Left"), self, activated=self.previous)
+        QShortcut(QKeySequence("D"), self, activated=self.next)
+        QShortcut(QKeySequence("Right"), self, activated=self.next)
+        QShortcut(QKeySequence("Q"), self, activated=self.previous_15)
+        QShortcut(QKeySequence("E"), self, activated=self.next_15)
         QShortcut(QKeySequence("Space"), self, activated=self.toggle_playback)
 
         # Top toolbar
@@ -142,6 +148,9 @@ class MainWindow(QMainWindow):
         self.view.setMinimumWidth(960)
         self.scene.set_current_layer(self.current_layer)
 
+        self.scene.annotation_changed.connect(self.refresh_frame_confirmation_indicator)
+        self.scene.annotation_changed.connect(self._mark_layer_dirty)
+
         # Refresh the confirmation bar any time annotations change
         # (manual edit/delete or AI import) while this frame is open.
         self.scene.annotation_changed.connect(self.refresh_frame_confirmation_indicator)
@@ -151,8 +160,8 @@ class MainWindow(QMainWindow):
 
         self.left_toolbar = self._create_left_toolbar()
         self.bottom_toolbar = BottomToolbar(self)
-        self.bottom_toolbar.previousFrame.connect(self.previous_frame)
-        self.bottom_toolbar.nextFrame.connect(self.next_frame)
+        self.bottom_toolbar.previousFrame.connect(self.previous)
+        self.bottom_toolbar.nextFrame.connect(self.next)
         self.bottom_toolbar.gotoFrame.connect(self.goto_frame)
 
         self.timeline_panel = TemporalTimelinePanel()
@@ -173,6 +182,15 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+
+        # Media name on top of the frame
+        self.media_name_label = QLabel("No media loaded")
+        self.media_name_label.setObjectName("mediaNameLabel")
+        self.media_name_label.setFixedHeight(28)
+        self.media_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._apply_media_name_label_theme()
+        ThemeManager.instance().themeChanged.connect(lambda _: self._apply_media_name_label_theme())
+        main_layout.addWidget(self.media_name_label, 0)
 
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -230,6 +248,22 @@ class MainWindow(QMainWindow):
 
         return self.right_sidebar
 
+    def _apply_media_name_label_theme(self):
+        if hasattr(self, "media_name_label"):
+            self.media_name_label.setStyleSheet(
+                f"QLabel#mediaNameLabel {{ "
+                f"background-color: {Colors.BG_PANEL if hasattr(Colors, 'BG_PANEL') else Colors.BG_APP}; "
+                f"color: {Colors.TEXT_PRIMARY if hasattr(Colors, 'TEXT_PRIMARY') else '#DDDDDD'}; "
+                f"font-weight: 600; border-bottom: 1px solid rgba(128,128,128,60); }}"
+            )
+
+    def _update_media_name_label(self):
+        path, _, _ = self.current_media_info()
+        if path is None:
+            self.media_name_label.setText("No media loaded")
+        else:
+            self.media_name_label.setText(os.path.basename(path))
+
     def confirm_layer_frame(self, layer_name):
         path, media_type, frame = self.current_media_info()
         if path is None:
@@ -264,7 +298,6 @@ class MainWindow(QMainWindow):
                 ),
             )
 
-            self.open_config()
             return
 
         # ---------------------------------------------------------
@@ -323,7 +356,7 @@ class MainWindow(QMainWindow):
         self.left_toolbar.cycle_video_label()
 
     def open_database_management(self):
-        dialog = DatabaseManagementDialog(
+        dialog = DBCleanupDialog(
             db_path=self.db.db_path,
             parent=self,
         )
@@ -355,36 +388,31 @@ class MainWindow(QMainWindow):
         self.load_current_image()
 
     def load_current_image(self):
+        self._autosave_current_layer()  # NEW
+
         if not self.image_paths:
             return
 
         path = self.image_paths[self.current_index]
-
         image = cv2.imread(path)
         self.original_frame = image
         if image is None:
             return
 
         self.original_height, self.original_width = image.shape[:2]
-
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = cv2.resize(image, (960, 540))
 
-        qimage = QImage(
-            image.data,
-            image.shape[1],
-            image.shape[0],
-            image.strides[0],
-            QImage.Format.Format_RGB888,
-        )
+        qimage = QImage(image.data, image.shape[1], image.shape[0], image.strides[0], QImage.Format.Format_RGB888)
 
         self.scene.set_image(QPixmap.fromImage(qimage))
         self.scene.set_image_scale(self.original_width, self.original_height)
         self.scene.set_media_context(path, "image", None)
-
+        self._update_media_name_label()
         self.view.fit_image()
 
         self.load_annotations()
+        self._layer_dirty = False  # NEW
         self.refresh_frame_confirmation_indicator()
         self.refresh_tag_editing_state()
 
@@ -434,34 +462,27 @@ class MainWindow(QMainWindow):
         self.load_game_state_segments()
 
     def goto_frame(self, frame_number):
+        self._autosave_current_layer()
+
         frame = self.get_frame_by_number(frame_number)
         if frame is None:
-            QMessageBox.warning(
-                self,
-                "No frame",
-                "Please load an image or video first.",
-            )
+            QMessageBox.warning(self, "No frame", "Please load an image or video first.")
             return
         self.original_frame = frame.copy()
         self.original_height, self.original_width = frame.shape[:2]
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = cv2.resize(frame, (960, 540))
 
-        qimage = QImage(
-            frame.data,
-            frame.shape[1],
-            frame.shape[0],
-            frame.strides[0],
-            QImage.Format.Format_RGB888,
-        )
+        qimage = QImage(frame.data, frame.shape[1], frame.shape[0], frame.strides[0], QImage.Format.Format_RGB888)
 
         self.scene.set_image(QPixmap.fromImage(qimage))
         self.scene.set_image_scale(self.original_width, self.original_height)
         self.scene.set_media_context(self.video_path, "video", frame_number)
+        self._update_media_name_label()
         self.view.fit_image()
         self.load_annotations()
+        self._layer_dirty = False  # NEW — the load itself isn't a user edit
 
-        # Update bottom toolbar
         self.bottom_toolbar.set_current_frame(frame_number)
         self.timeline_panel.set_current_frame(frame_number)
         self.refresh_frame_confirmation_indicator()
@@ -470,54 +491,48 @@ class MainWindow(QMainWindow):
     # Navigation
     # ---------------------------------------------------------
 
-    def next_frame(self):
+    def _step_frames(self, delta: int):
+        """
+        Shared implementation for all frame-stepping actions.
+        delta > 0 steps forward, delta < 0 steps backward.
+        Pauses playback first, then moves by |delta| frames.
+        """
+        self.pause_playback()
+
+        if self.cap is None and not self.image_paths:
+            return
+
+        current = self.bottom_toolbar.get_current_frame()
+        last = (self.total_frames - 1) if self.cap is not None else (len(self.image_paths) - 1)
+
+        new_frame = current + delta
+
+        # Clamp to valid range instead of silently no-op'ing, so a 15-frame
+        # jump near the start/end still moves as far as it can.
+        new_frame = max(0, min(last, new_frame))
+
+        if new_frame == current:
+            return
+
+        self.bottom_toolbar.set_current_frame(new_frame)
+
         if self.cap is not None:
-            if self.bottom_toolbar.get_current_frame() < self.total_frames - 1:
-                self.bottom_toolbar.set_current_frame(
-                    self.bottom_toolbar.get_current_frame() + 1
-                )
-                self.goto_frame(self.bottom_toolbar.get_current_frame())
-        elif self.image_paths:
-            if self.current_index < len(self.image_paths) - 1:
-                self.current_index += 1
-                self.bottom_toolbar.set_current_frame(self.current_index)
-                self.load_current_image()
+            self.goto_frame(new_frame)
+        else:
+            self.current_index = new_frame
+            self.load_current_image()
 
-    def next_15_frame(self):
-        self.pause_playback()
-        if self.cap is not None:
-            if self.bottom_toolbar.get_current_frame() < self.total_frames - 15:
-                self.bottom_toolbar.set_current_frame(
-                    self.bottom_toolbar.get_current_frame() + 15
-                )
-                self.goto_frame(self.bottom_toolbar.get_current_frame())
-        elif self.image_paths:
-            if self.current_index < len(self.image_paths) - 15:
-                self.current_index += 15
-                self.bottom_toolbar.set_current_frame(self.current_index)
-                self.load_current_image()
+    def next(self):
+        self._step_frames(1)
 
-    def previous_frame(self):
-        self.pause_playback()
-        if self.bottom_toolbar.get_current_frame() > 0:
-            new_frame = self.bottom_toolbar.get_current_frame() - 1
-            self.bottom_toolbar.set_current_frame(new_frame)
-            if self.cap is not None:
-                self.goto_frame(new_frame)
-            elif self.image_paths:
-                self.current_index = new_frame
-                self.load_current_image()
+    def next_15(self):
+        self._step_frames(15)
 
-    def previous_15_frame(self):
-        self.pause_playback()
-        if self.bottom_toolbar.get_current_frame() - 15 > 0:
-            new_frame = self.bottom_toolbar.get_current_frame() - 15
-            self.bottom_toolbar.set_current_frame(new_frame)
-            if self.cap is not None:
-                self.goto_frame(new_frame)
-            elif self.image_paths:
-                self.current_index = new_frame
-                self.load_current_image()
+    def previous(self):
+        self._step_frames(-1)
+
+    def previous_15(self):
+        self._step_frames(-15)
 
     # ---------------------------------------------------------
     # Save / Load
@@ -590,11 +605,63 @@ class MainWindow(QMainWindow):
 
         self.scene.load_annotations(annotations, self.current_layer)
 
+    def _persist_layer_annotations(self, path, media_type, frame, layer_name):
+        """
+        Writes whatever's currently in the scene for `layer_name` to the DB,
+        for the given (path, frame). Shared by the explicit Ctrl+S save and
+        the silent per-navigation autosave below, so both stay in sync.
+        """
+        layer = self.db.get_layer(layer_name)
+        if layer is None:
+            return
+
+        self.db.save_annotations(
+            media_path=path,
+            media_type=media_type,
+            width=self.original_width,
+            height=self.original_height,
+            layer=layer,
+            frame_number=frame,
+            annotations=self.scene.export_annotations(layer_name, path, frame),
+        )
+
+    def _autosave_current_layer(self):
+        """
+        Silently persists the active layer's annotations for whichever
+        frame is about to be LEFT — not the one being navigated TO.
+
+        Must be called as the very first line of any method that's about to
+        swap frames/media (goto_frame, load_current_image, layer_changed),
+        BEFORE that method touches self.original_width/height, self.cap,
+        self.current_index, or the bottom toolbar's frame — all of which
+        still hold the OLD frame's values at that point. It reads the old
+        (path, frame, media_type) from self.scene's own cached context
+        rather than current_media_info(), because current_media_info()
+        depends on the bottom toolbar / current_index, which the CALLER may
+        already have bumped to the new frame before invoking us (e.g.
+        next_frame() sets the toolbar's frame before calling goto_frame()).
+        """
+        if not self._layer_dirty:
+            return  # nothing drawn/changed since the last save — skip the write
+
+        path = self.scene.current_media_path
+        frame = self.scene.current_frame_number
+        media_type = self.scene.current_media_type
+
+        if path is None:
+            return
+
+        self._persist_layer_annotations(path, media_type, frame, self.current_layer)
+        self._layer_dirty = False
+
     def layer_changed(self, layer_name):
+        self._autosave_current_layer()  # NEW — save the OLD layer before switching away
+
         self.current_layer = layer_name
         self.scene.set_current_layer(layer_name)
         self.scene.clear_annotations()
         self.load_annotations()
+        self._layer_dirty = False  # NEW
         self.refresh_frame_confirmation_indicator()
 
     def label_changed(self, label_name):
@@ -747,6 +814,16 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # If the dialog is already open (or just minimized/hidden with a job
+        # running), bring the SAME instance back to front instead of creating
+        # a second one — the running job's thread is tied to this specific
+        # dialog object.
+        if self._batch_dialog is not None:
+            self._batch_dialog.show()
+            self._batch_dialog.raise_()
+            self._batch_dialog.activateWindow()
+            return
+
         dialog = BatchInferenceDialog(
             db=self.db,
             auto_annotator=self.auto_annotator,
@@ -754,7 +831,21 @@ class MainWindow(QMainWindow):
             parent=self,
         )
 
-        dialog.exec()
+        # A real top-level window with minimize/maximize/close, instead of
+        # a modal QDialog — this is what actually lets you switch back to
+        # the main window while a job runs.
+        dialog.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        dialog.setModal(False)
+
+        dialog.destroyed.connect(lambda: setattr(self, "_batch_dialog", None))
+        self._batch_dialog = dialog
+
+        dialog.show()  # NOT dialog.exec()
 
     def convert_result_to_annotations(self, result, layer: Layer):
         """
@@ -931,7 +1022,6 @@ class MainWindow(QMainWindow):
             error_text="Classification failed.",
         )
 
-        # self.game_state_thread = QThread(self)
         worker = GameStateWorker(
             db=self.db,
             classifier=self.game_state_classifier,
@@ -1290,7 +1380,7 @@ class MainWindow(QMainWindow):
             return
 
         # Move forward one frame.
-        self.next_frame()
+        self.next()
 
     def detect_keypoints_for_selection(self):
         """
@@ -1403,26 +1493,8 @@ class MainWindow(QMainWindow):
             batch_size=None,
             progress_callback=None,
             cancel_check=None,
-            filter_players_outside_court=True,
+            filter_players_outside_court=False,
     ):
-        """
-        Run one or more YOLO models across a list of frames, reading
-        frames in `batch_size`-sized chunks so peak RAM is bounded by
-        batch_size (not by the total frame count), while still feeding
-        the GPU a full batch per forward pass.
-
-        Loop order: model -> chunks of frames -> inference -> DB write.
-        Outer loop is the model, so each model reads every frame once
-        and finishes with the DB before the next model starts. Nested
-        the other way (frame -> all models) would re-read every frame
-        N times, which is the failure mode we're fixing.
-
-        Returns stats dict: {"frames": int, "imported": int, "skipped": int}.
-
-        `progress_callback(frames_done, frames_total)` is called after
-        each batch. `cancel_check()` is polled between batches — model
-        inference itself can't be interrupted mid-forward-pass.
-        """
         stats = {"frames": 0, "imported": 0, "skipped": 0}
 
         if not frame_numbers:
@@ -1433,113 +1505,114 @@ class MainWindow(QMainWindow):
         if path is None:
             return stats
 
-        for model_key in model_keys:
-            if cancel_check and cancel_check():
-                break
+        # Decode the whole job's frame set ONCE, up front, via a private
+        # capture — never self.cap. This is what makes it safe for the user
+        # to scrub/play the video on the GUI thread while this job runs on
+        # the background thread, and it means N selected models no longer
+        # trigger N re-decodes of the same footage.
+        cache_dir = None
+        if media_type == "video":
+            cache_dir = tempfile.mkdtemp(prefix="vb_batch_frames_")
+            self._extract_frames_to_disk_cache(frame_numbers, cache_dir, cancel_check)
 
-            layer = self.db.get_layer(model_key)
+        def read_frame(fn):
+            if cache_dir is not None:
+                cached_path = os.path.join(cache_dir, f"{fn}.jpg")
+                if os.path.exists(cached_path):
+                    return cv2.imread(cached_path)
+                return None
+            if self.image_paths and fn < len(self.image_paths):
+                return cv2.imread(self.image_paths[fn])
+            return None
 
-            # -------- 1. Decide which frames this model should touch -----
-            # Done up front so the "skipped" count for keep-mode is exact
-            # and doesn't depend on how the streaming loop chunks things.
-            if mode == "keep":
-                target_frames = [
-                    fn for fn in frame_numbers
-                    if not self.db.has_ai_annotations(path, layer.layer_id, fn)
-                ]
-                stats["skipped"] += len(frame_numbers) - len(target_frames)
-            else:
-                target_frames = frame_numbers
-
-            if not target_frames:
-                continue
-
-            # -------- 2. Resolve batch size once per model --------------
-            # estimate_batch_size() reads free VRAM, so it should be
-            # called per model (a segmentation model wants a smaller
-            # batch than a detection one on the same card).
-            effective_batch = (
-                batch_size
-                if batch_size is not None and batch_size > 0
-                else self.auto_annotator.estimate_batch_size(model_key)
-            )
-
-            # -------- 3. Stream: read a chunk, infer, write, drop ------
-            total = len(target_frames)
-            done = 0
-
-            for chunk_start in range(0, total, effective_batch):
+        try:
+            for model_key in model_keys:
                 if cancel_check and cancel_check():
-                    return stats
+                    break
 
-                chunk_frames_numbers = target_frames[
-                    chunk_start:chunk_start + effective_batch
-                ]
+                layer = self.db.get_layer(model_key)
 
-                # Read only this chunk into RAM. `frames` is dropped at
-                # the end of each iteration, so peak resident memory is
-                # effective_batch * frame_bytes, not total * frame_bytes.
-                frames = []
-                valid_frame_numbers = []
-                for fn in chunk_frames_numbers:
-                    frame = self.get_frame_by_number(fn)
-                    if frame is None:
-                        # A missing frame mid-video (corrupt decode,
-                        # seeking past EOF) shouldn't abort the whole
-                        # run — just skip it and move on.
+                if mode == "keep":
+                    target_frames = [
+                        fn for fn in frame_numbers
+                        if not self.db.has_ai_annotations(path, layer.layer_id, fn)
+                    ]
+                    stats["skipped"] += len(frame_numbers) - len(target_frames)
+                else:
+                    target_frames = frame_numbers
+
+                if not target_frames:
+                    continue
+
+                effective_batch = (
+                    batch_size
+                    if batch_size is not None and batch_size > 0
+                    else self.auto_annotator.estimate_batch_size(model_key)
+                )
+
+                total = len(target_frames)
+                done = 0
+
+                for chunk_start in range(0, total, effective_batch):
+                    if cancel_check and cancel_check():
+                        return stats
+
+                    chunk_frames_numbers = target_frames[chunk_start:chunk_start + effective_batch]
+
+                    frames = []
+                    valid_frame_numbers = []
+                    for fn in chunk_frames_numbers:
+                        frame = read_frame(fn)
+                        if frame is None:
+                            continue
+                        frames.append(frame)
+                        valid_frame_numbers.append(fn)
+
+                    if not frames:
+                        done += len(chunk_frames_numbers)
+                        if progress_callback:
+                            progress_callback(done, total)
                         continue
-                    frames.append(frame)
-                    valid_frame_numbers.append(fn)
 
-                if not frames:
+                    for idx, result in self.auto_annotator.predict_batch(
+                            model_key, frames, batch_size=len(frames)
+                    ):
+                        fn = valid_frame_numbers[idx]
+                        annotations, _ = self.convert_result_to_annotations_for_frame(
+                            result, layer, path, fn
+                        )
+
+                        if model_key == "players" and filter_players_outside_court:
+                            annotations = self._filter_annotations_outside_court(annotations, path)
+
+                        if not annotations:
+                            stats["frames"] += 1
+                            continue
+
+                        ids, skipped = self.db.replace_ai_annotations(
+                            media_path=path,
+                            media_type=media_type,
+                            width=self.original_width,
+                            height=self.original_height,
+                            layer=layer,
+                            frame_number=fn,
+                            annotations=annotations,
+                        )
+                        stats["imported"] += sum(1 for i in ids if i is not None)
+                        stats["skipped"] += skipped
+                        stats["frames"] += 1
+
+                    del frames
+
                     done += len(chunk_frames_numbers)
                     if progress_callback:
                         progress_callback(done, total)
-                    continue
-
-                # predict_batch already chunks internally, but passing
-                # batch_size=len(frames) here makes it a single forward
-                # pass per outer iteration — no nested re-chunking, so
-                # the GPU sees exactly what we accumulated on the CPU.
-                for idx, result in self.auto_annotator.predict_batch(
-                        model_key, frames, batch_size=len(frames)
-                ):
-                    fn = valid_frame_numbers[idx]
-                    annotations, _ = self.convert_result_to_annotations_for_frame(
-                        result, layer, path, fn
-                    )
-
-                    if model_key == "players" and filter_players_outside_court:
-                        annotations = self._filter_annotations_outside_court(annotations, path)
-
-                    if not annotations:
-                        # No detections for this frame — still counts as
-                        # processed, just nothing to write. Falls through
-                        # to the stats["frames"] increment below.
-                        stats["frames"] += 1
-                        continue
-
-                    ids, skipped = self.db.replace_ai_annotations(
-                        media_path=path,
-                        media_type=media_type,
-                        width=self.original_width,
-                        height=self.original_height,
-                        layer=layer,
-                        frame_number=fn,
-                        annotations=annotations,
-                    )
-                    stats["imported"] += sum(1 for i in ids if i is not None)
-                    stats["skipped"] += skipped
-                    stats["frames"] += 1
-
-                # Explicitly drop the chunk before reading the next one,
-                # so a slow GC doesn't accumulate two chunks' worth of
-                # frames in memory at the chunk boundary.
-                del frames
-
-                done += len(chunk_frames_numbers)
-                if progress_callback:
-                    progress_callback(done, total)
+        finally:
+            # Always clean up the temp cache — on normal completion, on
+            # cancellation (the early `return stats` above), and on any
+            # exception the caller's try/except in the worker will catch.
+            if cache_dir is not None:
+                shutil.rmtree(cache_dir, ignore_errors=True)
 
         return stats
 
@@ -1602,35 +1675,34 @@ class MainWindow(QMainWindow):
 
     def _filter_annotations_outside_court(self, annotations, path):
         """
-        Drops annotations whose foot point — bottom-center of a rectangle,
-        or the bottom-most point(s) of a polygon — falls outside this
-        media's cached whole-court polygon. No-op if no court has been
-        published/cached yet, so the checkbox is always safe to enable.
+        Drops annotations whose foot point falls outside this media's
+        cached court polygon. Batches every annotation's foot point into
+        one array and tests them all in a single numba call, instead of
+        calling cv2.pointPolygonTest once per annotation in a Python loop.
         """
+        if not annotations:
+            return annotations
+
         polygon = self.db.get_media_court_polygon(path)
         if not polygon:
             return annotations
 
-        polygon_np = np.array(polygon, dtype=np.float32)
-        kept = []
+        polygon_np = np.array(polygon, dtype=np.float64)
+        feet = np.empty((len(annotations), 2), dtype=np.float64)
 
-        for ann in annotations:
+        for i, ann in enumerate(annotations):
             geom = ann.geometry
             if ann.shape_type == "rectangle":
-                foot_x = geom["x"] + geom["width"] / 2
-                foot_y = geom["y"] + geom["height"]
+                feet[i, 0] = geom["x"] + geom["width"] / 2
+                feet[i, 1] = geom["y"] + geom["height"]
             else:
-                pts = geom
-                max_y = max(p[1] for p in pts)
-                bottom_pts = [p for p in pts if p[1] == max_y]
-                foot_x = sum(p[0] for p in bottom_pts) / len(bottom_pts)
-                foot_y = max_y
+                max_y = max(p[1] for p in geom)
+                bottom_pts = [p for p in geom if p[1] == max_y]
+                feet[i, 0] = sum(p[0] for p in bottom_pts) / len(bottom_pts)
+                feet[i, 1] = max_y
 
-            inside = cv2.pointPolygonTest(polygon_np, (float(foot_x), float(foot_y)), False) >= 0
-            if inside:
-                kept.append(ann)
-
-        return kept
+        inside_mask = points_inside_polygon(feet, polygon_np)
+        return [ann for ann, inside in zip(annotations, inside_mask) if inside]
 
     # ---------------------------------------------------------
     # Bulk court propagation
@@ -1770,3 +1842,53 @@ class MainWindow(QMainWindow):
             "frames that matter before exporting."
         )
         information_box(self, message=summary)
+
+    def _extract_frames_to_disk_cache(self, frame_numbers, cache_dir, cancel_check=None):
+        """
+        Decode every frame in `frame_numbers` from self.video_path exactly
+        once, using a PRIVATE VideoCapture (never self.cap — so the GUI
+        thread can scrub/play back the video at the same time without
+        racing the same cv2.VideoCapture handle) and pure sequential
+        .read() calls rather than per-frame .set()+.read() seeking, since
+        seeking on compressed video forces a decode-forward from the
+        nearest keyframe and is far more expensive than reading forward.
+
+        Writes each frame as cache_dir/{frame_number}.jpg. A frame that
+        fails to decode is simply absent from the cache — callers treat a
+        missing file the same as a decode failure.
+        """
+        frame_numbers = sorted(set(frame_numbers))
+        if not frame_numbers:
+            return
+
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            cap.release()
+            return
+
+        target_set = set(frame_numbers)
+        # One seek to the first frame actually needed, then pure sequential
+        # reads — pays the expensive seek cost exactly once for the whole job.
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_numbers[0])
+        current = frame_numbers[0]
+        remaining = len(frame_numbers)
+
+        while remaining > 0:
+            if cancel_check and cancel_check():
+                break
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if current in target_set:
+                cv2.imwrite(os.path.join(cache_dir, f"{current}.jpg"), frame)
+                remaining -= 1
+            current += 1
+
+        cap.release()
+
+    def _mark_layer_dirty(self):
+        self._layer_dirty = True
+
+    def closeEvent(self, event):
+        self._autosave_current_layer()
+        super().closeEvent(event)

@@ -229,10 +229,6 @@ class FrameAnnotationTab(QWidget):
             self.publishCourtCoordinatesRequested.emit
         )
         layout.addWidget(self.publish_court_btn)
-
-
-
-
         layout.addStretch()
 
     def set_layer(self, layer):

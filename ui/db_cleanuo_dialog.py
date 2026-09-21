@@ -18,10 +18,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from vb_gui.vb_annotator.database.database_cleanup_manager import DatabaseCleanupManager, DatabaseDeleteFilter
+from vb_gui.vb_annotator.database.db_cleanup_manager import DatabaseCleanupManager, DatabaseDeleteFilter
 
 
-class DatabaseManagementDialog(QDialog):
+class DBCleanupDialog(QDialog):
     """
     UI for selectively removing annotation/game-state data from the
     application database.

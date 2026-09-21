@@ -448,39 +448,7 @@ class TimelineCanvas(QWidget):
             self.seekRequested.emit(frame)
             self.update()
 
-    def jump_to_next_boundary(self):
-        """
-        If the playhead sits inside a tagged segment, jump to that
-        segment's end frame. If it's already there (or sitting in an
-        untagged gap), jump to the start of whatever segment comes next
-        — so repeated clicks always keep moving forward through the
-        timeline instead of getting stuck.
-        """
-        frame = self.current_frame
-        seg = self._segment_at_frame(frame)
-
-        if seg is not None and seg.end_frame > frame:
-            self._seek(seg.end_frame)
-            return
-
-        nxt = self._next_segment_after(frame)
-        if nxt is not None:
-            self._seek(nxt.start_frame)
-
-    def jump_to_previous_boundary(self):
-        """Mirror of jump_to_next_boundary, moving backward."""
-        frame = self.current_frame
-        seg = self._segment_at_frame(frame)
-
-        if seg is not None and seg.start_frame < frame:
-            self._seek(seg.start_frame)
-            return
-
-        prev = self._prev_segment_before(frame)
-        if prev is not None:
-            self._seek(prev.end_frame)
-
-    def jump_to_next_state(self, state: str):
+    def next_state(self, state: str):
         """Jump to the start of the nearest upcoming segment tagged
         `state` (e.g. 'play' for In-Play)."""
         frame = self.current_frame
@@ -491,7 +459,7 @@ class TimelineCanvas(QWidget):
         if candidates:
             self._seek(min(candidates, key=lambda s: s.start_frame).start_frame)
 
-    def jump_to_previous_state(self, state: str):
+    def previous_state(self, state: str):
         """Jump to the start of the nearest preceding segment tagged
         `state`."""
         frame = self.current_frame
@@ -549,41 +517,6 @@ class TemporalTimelinePanel(QWidget):
         self.canvas.seekRequested.connect(self.seekRequested.emit)
         self.canvas.intervalSelected.connect(self._on_interval_selected)
         self.canvas.pendingEditsChanged.connect(self._on_pending_changed)
-
-        # ---- NEW: boundary / in-play navigation ----
-        self.prev_inplay_btn = create_navigation_button(
-            tooltip="Previous In-Play segment",
-            icon_path="./resources/icons/bottom_toolbar/prevprev.png",
-            callback=lambda: self.canvas.jump_to_previous_state("play"),
-            object_name="navigationButton",
-            icon_size=18,
-        )
-        self.prev_boundary_btn = create_navigation_button(
-            tooltip="Jump to start of current segment",
-            icon_path="./resources/icons/bottom_toolbar/prev.png",
-            callback=self.canvas.jump_to_previous_boundary,
-            object_name="navigationButton",
-            icon_size=18,
-        )
-        self.next_boundary_btn = create_navigation_button(
-            tooltip="Jump to end of current segment",
-            icon_path="./resources/icons/bottom_toolbar/next.png",
-            callback=self.canvas.jump_to_next_boundary,
-            object_name="navigationButton",
-            icon_size=18,
-        )
-        self.next_inplay_btn = create_navigation_button(
-            tooltip="Next In-Play segment",
-            icon_path="./resources/icons/bottom_toolbar/nextnext.png",
-            callback=lambda: self.canvas.jump_to_next_state("play"),
-            object_name="navigationButton",
-            icon_size=18,
-        )
-
-        h_layout.addWidget(self.prev_inplay_btn)
-        h_layout.addWidget(self.prev_boundary_btn)
-        h_layout.addWidget(self.next_boundary_btn)
-        h_layout.addWidget(self.next_inplay_btn)
 
         h_layout.addWidget(QLabel("Zoom"))
         h_layout.addWidget(self.zoom_slider)

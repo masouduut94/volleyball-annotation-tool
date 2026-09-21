@@ -353,10 +353,17 @@ class BottomToolbar(QWidget):
         # Navigation buttons
         # ---------------------------------------------------------
 
+        self.prev_inplay_btn = create_navigation_button(
+            tooltip="Previous In-Play segment",
+            icon_path="./resources/icons/bottom_toolbar/prev_rally.png",
+            callback=lambda: self.main_window.timeline_panel.canvas.previous_state("play"),
+            object_name="navigationButton",
+            icon_size=self.ICON_SIZE,
+        )
         self.double_prev_btn = create_navigation_button(
             tooltip="Previous frame X15 (Q)",
             icon_path="./resources/icons/bottom_toolbar/prevprev.png",
-            callback=self.main_window.previous_15_frame,
+            callback=self.main_window.previous_15,
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
@@ -364,7 +371,7 @@ class BottomToolbar(QWidget):
         self.prev_btn = create_navigation_button(
             tooltip="Previous frame (A)",
             icon_path="./resources/icons/bottom_toolbar/prev.png",
-            callback=self.main_window.previous_frame,
+            callback=self.main_window.previous,
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
@@ -380,7 +387,7 @@ class BottomToolbar(QWidget):
         self.next_btn = create_navigation_button(
             tooltip="Next frame (D)",
             icon_path="./resources/icons/bottom_toolbar/next.png",
-            callback=self.main_window.next_frame,
+            callback=self.main_window.next,
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
@@ -388,10 +395,19 @@ class BottomToolbar(QWidget):
         self.double_next_btn = create_navigation_button(
             tooltip="Next frame X15 (D)",
             icon_path="./resources/icons/bottom_toolbar/nextnext.png",
-            callback=self.main_window.next_15_frame,
+            callback=self.main_window.next_15,
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
+
+        self.next_inplay_btn = create_navigation_button(
+            tooltip="Next In-Play segment",
+            icon_path="./resources/icons/bottom_toolbar/next_rally.png",
+            callback=lambda: self.main_window.timeline_panel.canvas.next_state("play"),
+            object_name="navigationButton",
+            icon_size=self.ICON_SIZE,
+        )
+
 
         # ---------------------------------------------------------
         # Frame seek bar
@@ -450,11 +466,14 @@ class BottomToolbar(QWidget):
         # Add widgets
         # ---------------------------------------------------------
 
+        layout.addWidget(self.prev_inplay_btn)
         layout.addWidget(self.double_prev_btn)
         layout.addWidget(self.prev_btn)
         layout.addWidget(self.play_btn)
         layout.addWidget(self.next_btn)
         layout.addWidget(self.double_next_btn)
+        layout.addWidget(self.next_inplay_btn)
+
 
         layout.addWidget(self.frame_slider)
 

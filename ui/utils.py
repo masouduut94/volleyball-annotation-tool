@@ -1,8 +1,10 @@
+import numpy as np
 from PyQt6.QtWidgets import QToolButton, QStyleOptionButton, QStyle, QWidget, QVBoxLayout
 from PyQt6.QtGui import QIcon, QPainter, QPainterPath, QColor
 from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QPushButton
 from PyQt6.QtCore import (QTimer, Qt, pyqtProperty, QSize, QPropertyAnimation,
                           QEasingCurve, QRect, QPoint, QObject, QEvent)
+from numba import njit
 
 
 class CustomToolTip(QWidget):
@@ -311,4 +313,30 @@ def create_navigation_button(
     btn.clicked.connect(callback)
     return btn
 
+@njit(cache=True)
+def points_inside_polygon(points, polygon):
+    """
+    Batch point-in-polygon via ray casting. points: (N,2) float64 array
+    of [x, y] pairs to test; polygon: (M,2) float64 array of vertices.
+    Returns a (N,) bool array. Compiled once (numba JIT) and cached to
+    disk via cache=True, so only the very first call in a fresh process
+    pays the compile cost — warm it up once at startup (see below) so
+    that cost never lands mid-job.
+    """
+    n = points.shape[0]
+    result = np.zeros(n, dtype=np.bool_)
+    px, py = polygon[:, 0], polygon[:, 1]
+    m = px.shape[0]
 
+    for i in range(n):
+        x, y = points[i, 0], points[i, 1]
+        inside = False
+        j = m - 1
+        for k in range(m):
+            if ((py[k] > y) != (py[j] > y)) and \
+                    (x < (px[j] - px[k]) * (y - py[k]) / (py[j] - py[k]) + px[k]):
+                inside = not inside
+            j = k
+        result[i] = inside
+
+    return result

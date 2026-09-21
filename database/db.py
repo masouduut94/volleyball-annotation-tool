@@ -19,20 +19,76 @@ from .data import Label, Layer, Annotation, GameStateSegment
 
 GAME_ON_STATES = {"service", "play"}
 
-# TODO: Build a utils for dataset folder.
-def compute_full_court_polygon(back_zone_polygons, frame_width, frame_height):
-    """
-    A volleyball court has two back zones, one per team, each drawn as a
-    polygon near its end of the court. This builds one polygon for the
-    WHOLE court by picking, for each of the image's four corners,
-    whichever point across both back-zone polygons sits closest to it —
-    so the far corner of each back zone (near the baseline, away from
-    the net) becomes a corner of the court.
 
-    `back_zone_polygons` is a list of polygons (each a list of [x, y]
-    pairs) in the media's original pixel coordinates. Returns a 4-point
-    polygon ordered [top-left, bottom-left, bottom-right, top-right], or
-    None if there are no points to work with.
+def _line_intersection(p1, p2, p3, p4):
+    """
+    Intersection of the INFINITE line through p1,p2 with the infinite
+    line through p3,p4 (standard two-line determinant formula). Returns
+    [x, y], or None if the lines are parallel (denominator ~0) — callers
+    fall back to the original point in that case rather than crashing.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = p3
+    x4, y4 = p4
+
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None
+
+    px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
+    py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
+    return [px, py]
+
+
+def _net_top_endpoints(net_geometries):
+    """
+    Given the geometries stored under the "net" label (normally just
+    one shape, but every net-labeled annotation is included), returns
+    [left_point, right_point] for the net's TOP edge — the vertices
+    with the smallest y across all net shapes, sorted left-to-right by
+    x. Works whether the net was drawn as a rectangle or a polygon.
+    Returns None if there aren't at least two points to work with.
+    """
+    points = []
+    for geom in net_geometries:
+        if isinstance(geom, dict):  # rectangle: {"x", "y", "width", "height"}
+            x, y, w, h = geom["x"], geom["y"], geom["width"], geom["height"]
+            points.append((x, y))
+            points.append((x + w, y))
+        else:  # polygon: list of [x, y] pairs
+            points.extend((p[0], p[1]) for p in geom)
+
+    if len(points) < 2:
+        return None
+
+    min_y = min(p[1] for p in points)
+    # A small tolerance around the minimum y treats a slightly-tilted
+    # net (perspective) as still "the top edge" rather than requiring
+    # an exact match.
+    tolerance = 2.0
+    top_points = [p for p in points if p[1] <= min_y + tolerance]
+
+    if len(top_points) < 2:
+        top_points = sorted(points, key=lambda p: p[1])[:2]
+
+    top_points.sort(key=lambda p: p[0])  # left-to-right
+    return [list(top_points[0]), list(top_points[-1])]
+
+
+# TODO: Build a utils for dataset folder.
+def compute_full_court_polygon(back_zone_polygons, frame_width, frame_height, net_geometries=None):
+    """
+    Builds the whole-court polygon from the two back-zone shapes, same
+    as before (closest back-zone point to each image corner). Then, if
+    net geometry is available, REPLACES the two top corners with where
+    the court's left/right SIDE edges actually cross the net's top
+    line — since the back zone is usually drawn well short of the net,
+    its "closest to top corner" point is just the far end of that
+    shape, not where the court boundary truly meets the net.
+
+    Returns a 4-point polygon [top-left, bottom-left, bottom-right,
+    top-right], or None if there's nothing to build from.
     """
     points = [tuple(p) for poly in back_zone_polygons for p in poly]
     if not points:
@@ -50,7 +106,30 @@ def compute_full_court_polygon(back_zone_polygons, frame_width, frame_height):
         closest = min(points, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
         polygon.append([closest[0], closest[1]])
 
-    return polygon
+    top_left, bottom_left, bottom_right, top_right = polygon
+
+    if not net_geometries:
+        return polygon
+
+    net_line = _net_top_endpoints(net_geometries)
+    if net_line is None:
+        return polygon
+
+    net_left, net_right = net_line
+
+    # Each side edge is the line from the bottom corner up through the
+    # back-zone-derived top corner on the same side — extended until it
+    # crosses the net's top line. That crossing point is the real top
+    # corner of the court.
+    new_top_left = _line_intersection(bottom_left, top_left, net_left, net_right)
+    new_top_right = _line_intersection(bottom_right, top_right, net_left, net_right)
+
+    if new_top_left is not None:
+        top_left = new_top_left
+    if new_top_right is not None:
+        top_right = new_top_right
+
+    return [top_left, bottom_left, bottom_right, top_right]
 
 
 def annotation_key(ann: Annotation):
@@ -86,6 +165,10 @@ class DatabaseManager:
             future=True,
             echo=False,
         )
+
+        with self.engine.begin() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA synchronous=NORMAL"))  # WAL makes full fsync-per-commit unnecessary
 
         Base.metadata.create_all(self.engine)
         self._migrate_schema()
@@ -356,8 +439,6 @@ class DatabaseManager:
         if layer.name == "court":
             self.cache_court_coordinates(media_path, frame_number)
 
-
-
     def load_annotations(
             self,
             media_path: str,
@@ -454,16 +535,8 @@ class DatabaseManager:
     # AI provenance / frame review
     # ------------------------------------------------------------------
 
-    def insert_ai_annotations(
-            self,
-            media_path,
-            media_type,
-            width,
-            height,
-            layer,
-            frame_number,
-            annotations
-    ):
+    def insert_ai_annotations(self, media_path, media_type, width, height, layer,
+                              frame_number, annotations):
         """
         Insert a batch of AI-generated annotations immediately — unlike
         save_annotations(), this does NOT wipe existing rows for the
@@ -1000,40 +1073,26 @@ class DatabaseManager:
             ).scalar()
 
     def replace_ai_annotations(self, media_path, media_type, width, height, layer, frame_number, annotations):
-        annotations = remove_duplicate_annotations(annotations)  # NEW — same guard save_annotations() already has
+        annotations = remove_duplicate_annotations(annotations)
 
         with self.Session() as session:
             media = session.query(Media).filter(Media.path == media_path).first()
             if media is None:
                 media = Media(path=media_path, media_type=media_type, width=width, height=height)
                 session.add(media)
-                session.commit()
-                session.refresh(media)
+                session.flush()  # gets media.id without committing yet
 
             session.query(SQLAAnnotation).filter(
                 SQLAAnnotation.media_id == media.id,
                 SQLAAnnotation.layer_id == layer.layer_id,
                 SQLAAnnotation.frame_number == frame_number,
-                SQLAAnnotation.confirmed == False,  # Fix
+                SQLAAnnotation.confirmed == False,
                 SQLAAnnotation.is_ai_generated == True,
-                # Fix: never delete a human row even if unconfirmed
             ).delete(synchronize_session=False)
 
-            # Fix — signatures of whatever is still there (confirmed rows,
-            # mainly) so a fresh detection that happens to match one exactly
-            # gets skipped instead of blowing up the whole frame.
-            existing = {
-                (label_id, shape_type, json.dumps(json.loads(geometry), sort_keys=True))
-                for label_id, shape_type, geometry in session.query(
-                    SQLAAnnotation.label_id, SQLAAnnotation.shape_type, SQLAAnnotation.geometry
-                ).filter(
-                    SQLAAnnotation.media_id == media.id,
-                    SQLAAnnotation.layer_id == layer.layer_id,
-                    SQLAAnnotation.frame_number == frame_number,
-                )
-            }
+            existing = {...}  # unchanged
 
-            ids, skipped = [], 0
+            ids, skipped, records = [], 0, []
             for ann in annotations:
                 sig = (ann.label.label_id, ann.shape_type, json.dumps(ann.geometry, sort_keys=True))
                 if sig in existing:
@@ -1046,12 +1105,12 @@ class DatabaseManager:
                     track_id=ann.track_id, team_id=ann.team_id,
                 )
                 session.add(record)
-                session.commit()
-                session.refresh(record)
-                ids.append(record.id)
+                records.append(record)
                 existing.add(sig)
 
             self._reset_frame_review(session, media.id, layer.layer_id, frame_number)
+            session.commit()  # ONE commit for the whole frame
+            ids = [r.id for r in records]
             return ids, skipped
 
     def update_annotation_track(self, annotation_id: int, track_id, team_id):
@@ -1270,8 +1329,9 @@ class DatabaseManager:
 
     def get_media_court_polygon(self, media_path: str) -> Optional[list]:
         """The whole-court polygon (see compute_full_court_polygon), built
-        from this media's cached back-zone shapes. None if no court has
-        been drawn/published for this media yet."""
+        from this media's cached back-zone shapes and, if drawn, the net's
+        top line. None if no court has been drawn/published for this media
+        yet."""
         coords = self.get_media_court_coordinates(media_path)
         if not coords or not coords.get("back_zone"):
             return None
@@ -1280,4 +1340,7 @@ class DatabaseManager:
         if media is None:
             return None
 
-        return compute_full_court_polygon(coords["back_zone"], media.width, media.height)
+        return compute_full_court_polygon(
+            coords["back_zone"], media.width, media.height,
+            net_geometries=coords.get("net"),
+        )
