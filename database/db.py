@@ -1351,18 +1351,19 @@ class DatabaseManager:
             media_path: str,
             fps: float = 30.0,
             min_gap_seconds: float = 3.0,
+            play_start_extension_seconds: float = 1.0,
     ) -> int:
         """
-        Fill short gaps between consecutive game-state segments.
+        Fill short implicit no-play gaps between game-state segments.
 
-        The DB does NOT contain explicit segments for every no-play gap.
-        Therefore, the gap between:
+        The DB does not contain explicit records for these gaps.
+        The gap between:
 
             current.end_frame
             and
             next.start_frame
 
-        is itself considered the missing/no-play region.
+        is therefore considered the missing/no-play region.
 
         Supported transitions:
 
@@ -1372,29 +1373,33 @@ class DatabaseManager:
 
         Rules:
 
-            1. service -> service:
-               If the gap is shorter than min_gap_seconds, extend the
-               first service to the beginning of the next service.
+            service -> service:
+                Merge the second service into the first service.
 
-            2. service -> play:
-               If the gap is shorter than min_gap_seconds, extend the
-               service to the frame immediately before the play starts.
+            service -> play:
+                Extend the play backwards to immediately after the
+                service:
 
-               The play segment is NOT removed or modified.
+                    play.start_frame = service.end_frame + 1
 
-            3. play -> play:
-               If the gap is shorter than min_gap_seconds, merge the
-               second play into the first play.
+                The service and play remain separate segments.
 
-               The first play keeps its original start frame.
-               The second play's end frame becomes the new end frame.
+            play -> play:
+                Merge the second play into the first play.
 
-               The resulting play is then extended by
-               min_gap_allowed - 1 frames.
+                The first play keeps its original start.
+                The second play's end becomes the new end.
+                The merged play is then extended forward by
+                min_gap_allowed - 1 frames.
 
-        IMPORTANT:
-            The original query result is never modified during traversal.
-            All changes are collected first and persisted afterwards.
+            After all of the above smoothing is complete:
+
+                If a play segment does not have a service segment
+                immediately before it, extend its beginning backwards
+                by play_start_extension_seconds.
+
+                This is deliberately performed as a SECOND PASS so
+                that it cannot interfere with the gap-filling logic.
         """
 
         segments = self.get_game_state_segments(media_path)
@@ -1404,33 +1409,41 @@ class DatabaseManager:
 
         fps = fps if fps and fps > 0 else 30.0
 
-        # Example:
-        # 3 seconds * 30 FPS = 90 frames.
+        # -------------------------------------------------------------
+        # Gap configuration.
+        # -------------------------------------------------------------
+
         min_gap_allowed = int(round(min_gap_seconds * fps))
 
-        # Additional extension requested for merged/filled play.
-        #
         # Example:
-        # 90 - 1 = 89 frames.
+        #
+        # 3 seconds * 30 FPS = 90 frames
+        # 90 - 1 = 89 frames
+        #
+        # Used when extending a merged play -> play.
         extension_frames = max(0, min_gap_allowed - 1)
 
-        # Work on a stable snapshot of the original DB query result.
+        # -------------------------------------------------------------
+        # Second-pass play-start extension configuration.
+        # -------------------------------------------------------------
+
+        play_start_extension_frames = int(
+            round(play_start_extension_seconds * fps)
+        )
+
+        # Always traverse a stable snapshot of the original DB result.
         segments = sorted(
             segments,
             key=lambda s: (s.start_frame, s.end_frame),
         )
 
         # -------------------------------------------------------------
-        # IMPORTANT:
+        # FIRST PASS
         #
-        # Never remove or modify `segments` while traversing it.
+        # Fill short implicit gaps and merge segments.
         #
-        # We collect:
-        #
-        #   delete_ids
-        #   updates
-        #
-        # and apply them only after the traversal is complete.
+        # Do not modify/remove anything from `segments` while
+        # traversing it.
         # -------------------------------------------------------------
 
         delete_ids = set()
@@ -1446,10 +1459,7 @@ class DatabaseManager:
             next_segment = segments[i + 1]
 
             # ---------------------------------------------------------
-            # Only compare consecutive segments.
-            #
-            # Any frame range between current.end_frame and
-            # next_segment.start_frame is the implicit no-play gap.
+            # Calculate the implicit gap between consecutive segments.
             # ---------------------------------------------------------
 
             gap_frames = (
@@ -1458,12 +1468,13 @@ class DatabaseManager:
                     - 1
             )
 
-            # No gap to fill.
+            # No valid gap.
             if gap_frames < 0:
                 i += 1
                 continue
 
-            # Only fill gaps shorter than min_gap_seconds.
+            # Only process gaps strictly shorter than the configured
+            # minimum allowed gap.
             if gap_frames >= min_gap_allowed:
                 i += 1
                 continue
@@ -1473,10 +1484,17 @@ class DatabaseManager:
             #
             # service -> service
             #
-            # Extend the first service to the frame before the next
-            # service.
+            # Merge the second service into the first service.
             #
-            # Do NOT remove the second service.
+            # Example:
+            #
+            # service 100 - 200
+            # gap     201 - 230
+            # service 231 - 300
+            #
+            # becomes:
+            #
+            # service 100 - 300
             # ---------------------------------------------------------
 
             if (
@@ -1485,11 +1503,16 @@ class DatabaseManager:
             ):
                 updates[current.segment_id] = (
                     current.start_frame,
-                    next_segment.start_frame - 1,
+                    next_segment.end_frame,
                     "service",
                 )
 
-                i += 1
+                # The second service has been absorbed.
+                if next_segment.segment_id is not None:
+                    delete_ids.add(next_segment.segment_id)
+
+                # Skip both original segments.
+                i += 2
                 continue
 
             # ---------------------------------------------------------
@@ -1497,22 +1520,36 @@ class DatabaseManager:
             #
             # service -> play
             #
-            # Extend the service to the frame immediately before play.
+            # Extend the beginning of play backwards to immediately
+            # after the service.
             #
-            # The play segment remains completely untouched.
+            # Example:
+            #
+            # service 100 - 200
+            # gap     201 - 230
+            # play    231 - 400
+            #
+            # becomes:
+            #
+            # service 100 - 200
+            # play    201 - 400
+            #
+            # The service itself is not changed.
+            # The play segment is not deleted.
             # ---------------------------------------------------------
 
             if (
                     current.state == "service"
                     and next_segment.state == "play"
             ):
-                updates[current.segment_id] = (
-                    current.start_frame,
-                    next_segment.start_frame - 1,
-                    "service",
+                updates[next_segment.segment_id] = (
+                    current.end_frame + 1,
+                    next_segment.end_frame,
+                    "play",
                 )
 
-                i += 1
+                # Both segments have now been handled.
+                i += 2
                 continue
 
             # ---------------------------------------------------------
@@ -1522,15 +1559,19 @@ class DatabaseManager:
             #
             # Merge the second play into the first.
             #
-            # First play:
+            # Example:
             #
-            #     original start  -> preserved
+            # play 100 - 200
+            # gap  201 - 230
+            # play 231 - 400
             #
-            # Second play:
+            # becomes:
             #
-            #     original end    -> preserved as the base end
+            # play 100 - 489
             #
-            # Then extend the merged play by min_gap_allowed - 1.
+            # at 30 FPS / 3 seconds:
+            #
+            # 400 + (90 - 1) = 489
             # ---------------------------------------------------------
 
             if (
@@ -1548,10 +1589,11 @@ class DatabaseManager:
                     "play",
                 )
 
-                # The second play has been absorbed into the first one.
+                # The second play has been absorbed.
                 if next_segment.segment_id is not None:
                     delete_ids.add(next_segment.segment_id)
 
+                # Skip both original segments.
                 i += 2
                 continue
 
@@ -1562,14 +1604,14 @@ class DatabaseManager:
             i += 1
 
         # -------------------------------------------------------------
-        # Persist all changes only AFTER the complete traversal.
+        # Persist FIRST PASS.
         # -------------------------------------------------------------
 
         changed = 0
 
         with self.Session() as session:
 
-            # Delete absorbed play segments.
+            # Delete absorbed segments.
             for segment_id in delete_ids:
                 session.query(SQLAGameStateSegment).filter(
                     SQLAGameStateSegment.id == segment_id
@@ -1579,10 +1621,9 @@ class DatabaseManager:
 
                 changed += 1
 
-            # Apply all collected updates.
+            # Apply collected updates.
             for segment_id, (start_frame, end_frame, state) in updates.items():
 
-                # A segment scheduled for deletion must never be updated.
                 if segment_id in delete_ids:
                     continue
 
@@ -1601,5 +1642,124 @@ class DatabaseManager:
                 changed += 1
 
             session.commit()
+
+        # -------------------------------------------------------------
+        # SECOND PASS
+        #
+        # Reload the final state AFTER smoothing.
+        #
+        # This is important because the first pass may have:
+        #
+        #   - merged service segments
+        #   - merged play segments
+        #   - deleted absorbed segments
+        #   - extended play segments
+        #
+        # We now determine which play segments do not have a service
+        # immediately before them.
+        # -------------------------------------------------------------
+
+        segments = self.get_game_state_segments(media_path)
+
+        if not segments:
+            return changed
+
+        segments = sorted(
+            segments,
+            key=lambda s: (s.start_frame, s.end_frame),
+        )
+
+        start_updates = {}
+
+        for index, segment in enumerate(segments):
+
+            # Only play segments are relevant.
+            if segment.state != "play":
+                continue
+
+            # ---------------------------------------------------------
+            # If this is the first segment in the video, there is no
+            # service before it.
+            # ---------------------------------------------------------
+
+            if index == 0:
+
+                new_start = max(
+                    0,
+                    segment.start_frame - play_start_extension_frames,
+                )
+
+                if new_start < segment.start_frame:
+                    start_updates[segment.segment_id] = (
+                        new_start,
+                        segment.end_frame,
+                    )
+
+                continue
+
+            previous = segments[index - 1]
+
+            # ---------------------------------------------------------
+            # If a service exists immediately before this play,
+            # service -> play smoothing has already handled it.
+            #
+            # Do not extend this play backwards again.
+            # ---------------------------------------------------------
+
+            if previous.state == "service":
+                continue
+
+            # ---------------------------------------------------------
+            # No service immediately precedes this play.
+            #
+            # Extend the beginning backwards by 1 second.
+            #
+            # This catches cases such as:
+            #
+            #   play
+            #
+            # or:
+            #
+            #   no-play/blank (implicit)
+            #   play
+            #
+            # where the beginning of the rally may have been missed.
+            # ---------------------------------------------------------
+
+            new_start = max(
+                0,
+                segment.start_frame - play_start_extension_frames,
+            )
+
+            if new_start < segment.start_frame:
+                start_updates[segment.segment_id] = (
+                    new_start,
+                    segment.end_frame,
+                )
+
+        # -------------------------------------------------------------
+        # Persist SECOND PASS.
+        # -------------------------------------------------------------
+
+        if start_updates:
+
+            with self.Session() as session:
+
+                for segment_id, (start_frame, end_frame) in start_updates.items():
+
+                    record = session.get(
+                        SQLAGameStateSegment,
+                        segment_id,
+                    )
+
+                    if record is None:
+                        continue
+
+                    record.start_frame = start_frame
+                    record.end_frame = end_frame
+
+                    changed += 1
+
+                session.commit()
 
         return changed
