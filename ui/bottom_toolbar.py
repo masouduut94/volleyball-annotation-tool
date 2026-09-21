@@ -331,6 +331,7 @@ class BottomToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent
+        self._rallies = []
 
         self._setup_ui()
 
@@ -353,7 +354,7 @@ class BottomToolbar(QWidget):
         # Navigation buttons
         # ---------------------------------------------------------
 
-        self.prev_inplay_btn = create_navigation_button(
+        self.prev_rally_btn = create_navigation_button(
             tooltip="Previous In-Play segment",
             icon_path="./resources/icons/bottom_toolbar/prev_rally.png",
             callback=lambda: self.main_window.timeline_panel.canvas.previous_state("play"),
@@ -400,7 +401,7 @@ class BottomToolbar(QWidget):
             icon_size=self.ICON_SIZE,
         )
 
-        self.next_inplay_btn = create_navigation_button(
+        self.next_rally_btn = create_navigation_button(
             tooltip="Next In-Play segment",
             icon_path="./resources/icons/bottom_toolbar/next_rally.png",
             callback=lambda: self.main_window.timeline_panel.canvas.next_state("play"),
@@ -456,23 +457,46 @@ class BottomToolbar(QWidget):
         # Total frames
         # ---------------------------------------------------------
 
-        separator2 = QLabel("/")
-        separator2.setObjectName("separator_label")
-
         self.total_label = QLabel("0")
         self.total_label.setObjectName("total_label")
+
+        separator2 = QLabel("|")
+        separator2.setObjectName("separator_label")
+
+        # Rally navigation.
+        #
+        # Shows:
+        #   Rally: 3 / 24
+        #
+        # The user can enter a rally number and press Enter to jump
+        # to the first frame of that play segment.
+
+        self.rally_label = QLabel("Rally")
+
+        self.rally_spin = QSpinBox()
+        self.rally_spin.setRange(1, 1)
+        self.rally_spin.setValue(1)
+        self.rally_spin.setKeyboardTracking(False)
+        self.rally_spin.setMinimumWidth(70)
+
+        self.rally_total_label = QLabel("/ 0")
+
+        self.rally_spin.editingFinished.connect(
+            self._on_rally_spin_changed
+        )
+
 
         # ---------------------------------------------------------
         # Add widgets
         # ---------------------------------------------------------
 
-        layout.addWidget(self.prev_inplay_btn)
+        layout.addWidget(self.prev_rally_btn)
         layout.addWidget(self.double_prev_btn)
         layout.addWidget(self.prev_btn)
         layout.addWidget(self.play_btn)
         layout.addWidget(self.next_btn)
         layout.addWidget(self.double_next_btn)
-        layout.addWidget(self.next_inplay_btn)
+        layout.addWidget(self.next_rally_btn)
 
 
         layout.addWidget(self.frame_slider)
@@ -484,6 +508,11 @@ class BottomToolbar(QWidget):
 
         layout.addWidget(separator2)
         layout.addWidget(self.total_label)
+
+        layout.addWidget(separator2)
+        layout.addWidget(self.rally_label)
+        layout.addWidget(self.rally_spin)
+        layout.addWidget(self.rally_total_label)
 
         # ---------------------------------------------------------
         # Right stretch
@@ -585,3 +614,86 @@ class BottomToolbar(QWidget):
         else:
             self.play_btn.setIcon(QIcon("./resources/icons/bottom_toolbar/play.png"))
             self.play_btn.setToolTip("Play (Space)")
+
+    def set_rallies(self, rallies):
+        """
+        Update the rally navigation widget.
+
+        `rallies` must be the ordered list of game-state `play` segments.
+        """
+
+        self._rallies = list(rallies or [])
+
+        total = len(self._rallies)
+
+        if total == 0:
+            self.rally_spin.blockSignals(True)
+            self.rally_spin.setRange(1, 1)
+            self.rally_spin.setValue(1)
+            self.rally_spin.blockSignals(False)
+
+            self.rally_total_label.setText("/ 0")
+            return
+
+        self.rally_spin.blockSignals(True)
+        self.rally_spin.setRange(1, total)
+        self.rally_spin.setValue(
+            min(self.rally_spin.value(), total)
+        )
+        self.rally_spin.blockSignals(False)
+
+        self.rally_total_label.setText(f"/ {total}")
+
+    def _on_rally_spin_changed(self):
+        """
+        Jump to the first frame of the selected rally.
+        """
+
+        if not self._rallies:
+            return
+
+        rally_number = self.rally_spin.value()
+
+        # Convert 1-based UI number to 0-based list index.
+        index = rally_number - 1
+
+        if index < 0 or index >= len(self._rallies):
+            return
+
+        rally = self._rallies[index]
+
+        # Use the same frame-navigation mechanism as frame_spin.
+        self.frame_spin.setValue(rally.start_frame)
+
+    def set_current_rally(self, frame_index):
+        """
+        Update the rally number based on the current frame.
+
+        The selected rally is the play segment containing the current
+        frame. If the current frame is outside a play segment, the
+        nearest previous rally is displayed.
+        """
+
+        if not self._rallies:
+            return
+
+        rally_number = None
+
+        for index, rally in enumerate(self._rallies):
+
+            if rally.start_frame <= frame_index <= rally.end_frame:
+                rally_number = index + 1
+                break
+
+            if frame_index < rally.start_frame:
+                # Keep the previous rally selected.
+                break
+
+            rally_number = index + 1
+
+        if rally_number is None:
+            rally_number = 1
+
+        self.rally_spin.blockSignals(True)
+        self.rally_spin.setValue(rally_number)
+        self.rally_spin.blockSignals(False)

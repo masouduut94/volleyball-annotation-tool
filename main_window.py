@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Q"), self, activated=self.previous_15)
         QShortcut(QKeySequence("E"), self, activated=self.next_15)
         QShortcut(QKeySequence("Space"), self, activated=self.toggle_playback)
+        QShortcut(QKeySequence("Shift+D"), self, activated=lambda: self.timeline_panel.canvas.next_state("play"))
+        QShortcut(QKeySequence("Shift+A"), self, activated=lambda: self.timeline_panel.canvas.previous_state("play"))
 
         # Top toolbar
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
@@ -383,7 +385,8 @@ class MainWindow(QMainWindow):
 
         self.bottom_toolbar.set_frame_range(len(files) - 1)
         self.timeline_panel.setVisible(False)
-        self.load_game_state_segments()  # NEW — clears any leftover overlay from a prior video
+        self.load_game_state_segments()
+        self.load_game_state_rallies()
 
         self.load_current_image()
 
@@ -460,6 +463,7 @@ class MainWindow(QMainWindow):
 
         self.goto_frame(0)
         self.load_game_state_segments()
+        self.load_game_state_rallies()
 
     def goto_frame(self, frame_number):
         self._autosave_current_layer()
@@ -485,19 +489,21 @@ class MainWindow(QMainWindow):
 
         self.bottom_toolbar.set_current_frame(frame_number)
         self.timeline_panel.set_current_frame(frame_number)
+        self.bottom_toolbar.set_current_rally(frame_number)
         self.refresh_frame_confirmation_indicator()
 
     # ---------------------------------------------------------
     # Navigation
     # ---------------------------------------------------------
 
-    def _step_frames(self, delta: int):
+    def _step_frames(self, delta: int, play=False):
         """
         Shared implementation for all frame-stepping actions.
         delta > 0 steps forward, delta < 0 steps backward.
         Pauses playback first, then moves by |delta| frames.
         """
-        self.pause_playback()
+        if not play:
+            self.pause_playback()
 
         if self.cap is None and not self.image_paths:
             return
@@ -523,7 +529,7 @@ class MainWindow(QMainWindow):
             self.load_current_image()
 
     def next(self):
-        self._step_frames(1)
+        self._step_frames(1, play=True)
 
     def next_15(self):
         self._step_frames(15)
@@ -986,6 +992,7 @@ class MainWindow(QMainWindow):
 
         # NEW — warn before an AI classification run would overwrite
         # existing tagged data anywhere in the requested range.
+        self._game_state_min_gap_seconds = settings["min_gap_seconds"]
         overlapping = self.db.get_segments_overlapping_range(
             self.video_path, settings["start_frame"], settings["end_frame"],
         )
@@ -1115,8 +1122,50 @@ class MainWindow(QMainWindow):
     def _game_state_finished(self, count):
         self.game_state_progress_dialog.set_finished()
         self.game_state_progress_dialog.close()
+
+        filled = 0
+
+        if self.video_path is not None:
+            filled = self.db.fill_short_game_state_gaps(
+                self.video_path,
+                fps=self.video_fps,
+                min_gap_seconds=self._game_state_min_gap_seconds,
+            )
+
         self.load_game_state_segments()
-        information_box(self, message=f"✅ Classified {count} window(s).")
+        self.load_game_state_rallies()
+
+        note = f" ({filled} gap(s) filled)" if filled else ""
+
+        information_box(
+            self,
+            message=f"✅ Classified {count} window(s).{note}",
+        )
+
+    def load_game_state_rallies(self):
+        """
+        Load all play segments for the current video.
+
+        Each `play` segment represents one rally.
+        """
+
+        if self.video_path is None:
+            self.bottom_toolbar.set_rallies([])
+            return
+
+        segments = self.db.get_game_state_segments(
+            self.video_path
+        )
+
+        rallies = [
+            segment
+            for segment in segments
+            if segment.state == "play"
+        ]
+
+        rallies.sort(key=lambda s: s.start_frame)
+
+        self.bottom_toolbar.set_rallies(rallies)
 
     def _game_state_cancelled(self):
         self.game_state_progress_dialog.set_cancelled()
@@ -1214,6 +1263,7 @@ class MainWindow(QMainWindow):
         self.left_toolbar.set_video_tag_pending(False)
         self.timeline_panel.set_pending_marker(None, None)
         self.load_game_state_segments()
+        self.load_game_state_rallies()
 
     def tag_cancel(self):
         self._tag_pending_start = None
@@ -1245,6 +1295,7 @@ class MainWindow(QMainWindow):
             written += 1
 
         self.load_game_state_segments()
+        self.load_game_state_rallies()
         return written
 
     def on_timeline_apply_clicked(self, edits: dict):
@@ -1267,6 +1318,7 @@ class MainWindow(QMainWindow):
         if error:
             QMessageBox.warning(self, "Could Not Update Tag", error)
         self.load_game_state_segments()
+        self.load_game_state_rallies()
 
     def on_timeline_interval_delete_requested(self, segment_id):
         # Commit any other pending drags first, so deleting one box doesn't
@@ -1277,6 +1329,7 @@ class MainWindow(QMainWindow):
 
         self.db.delete_game_state_segment(segment_id)
         self.load_game_state_segments()
+        self.load_game_state_rallies()
 
     def on_timeline_clear_all_requested(self):
         if self.video_path is None:
@@ -1296,6 +1349,7 @@ class MainWindow(QMainWindow):
 
         self.db.clear_game_state_segments(self.video_path)
         self.load_game_state_segments()
+        self.load_game_state_rallies()
 
     # ---------------------------------------------------------
     # Video Playback

@@ -18,7 +18,8 @@ from .schema import (
 from .data import Label, Layer, Annotation, GameStateSegment
 
 GAME_ON_STATES = {"service", "play"}
-
+MIN_GAP_SECONDS = 3
+min_gap_allowed = 90  # frames
 
 def _line_intersection(p1, p2, p3, p4):
     """
@@ -1344,3 +1345,261 @@ class DatabaseManager:
             coords["back_zone"], media.width, media.height,
             net_geometries=coords.get("net"),
         )
+
+    def fill_short_game_state_gaps(
+            self,
+            media_path: str,
+            fps: float = 30.0,
+            min_gap_seconds: float = 3.0,
+    ) -> int:
+        """
+        Fill short gaps between consecutive game-state segments.
+
+        The DB does NOT contain explicit segments for every no-play gap.
+        Therefore, the gap between:
+
+            current.end_frame
+            and
+            next.start_frame
+
+        is itself considered the missing/no-play region.
+
+        Supported transitions:
+
+            service -> service
+            service -> play
+            play    -> play
+
+        Rules:
+
+            1. service -> service:
+               If the gap is shorter than min_gap_seconds, extend the
+               first service to the beginning of the next service.
+
+            2. service -> play:
+               If the gap is shorter than min_gap_seconds, extend the
+               service to the frame immediately before the play starts.
+
+               The play segment is NOT removed or modified.
+
+            3. play -> play:
+               If the gap is shorter than min_gap_seconds, merge the
+               second play into the first play.
+
+               The first play keeps its original start frame.
+               The second play's end frame becomes the new end frame.
+
+               The resulting play is then extended by
+               min_gap_allowed - 1 frames.
+
+        IMPORTANT:
+            The original query result is never modified during traversal.
+            All changes are collected first and persisted afterwards.
+        """
+
+        segments = self.get_game_state_segments(media_path)
+
+        if not segments:
+            return 0
+
+        fps = fps if fps and fps > 0 else 30.0
+
+        # Example:
+        # 3 seconds * 30 FPS = 90 frames.
+        min_gap_allowed = int(round(min_gap_seconds * fps))
+
+        # Additional extension requested for merged/filled play.
+        #
+        # Example:
+        # 90 - 1 = 89 frames.
+        extension_frames = max(0, min_gap_allowed - 1)
+
+        # Work on a stable snapshot of the original DB query result.
+        segments = sorted(
+            segments,
+            key=lambda s: (s.start_frame, s.end_frame),
+        )
+
+        # -------------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Never remove or modify `segments` while traversing it.
+        #
+        # We collect:
+        #
+        #   delete_ids
+        #   updates
+        #
+        # and apply them only after the traversal is complete.
+        # -------------------------------------------------------------
+
+        delete_ids = set()
+
+        # segment_id -> (start_frame, end_frame, state)
+        updates = {}
+
+        i = 0
+
+        while i + 1 < len(segments):
+
+            current = segments[i]
+            next_segment = segments[i + 1]
+
+            # ---------------------------------------------------------
+            # Only compare consecutive segments.
+            #
+            # Any frame range between current.end_frame and
+            # next_segment.start_frame is the implicit no-play gap.
+            # ---------------------------------------------------------
+
+            gap_frames = (
+                    next_segment.start_frame
+                    - current.end_frame
+                    - 1
+            )
+
+            # No gap to fill.
+            if gap_frames < 0:
+                i += 1
+                continue
+
+            # Only fill gaps shorter than min_gap_seconds.
+            if gap_frames >= min_gap_allowed:
+                i += 1
+                continue
+
+            # ---------------------------------------------------------
+            # CASE 1:
+            #
+            # service -> service
+            #
+            # Extend the first service to the frame before the next
+            # service.
+            #
+            # Do NOT remove the second service.
+            # ---------------------------------------------------------
+
+            if (
+                    current.state == "service"
+                    and next_segment.state == "service"
+            ):
+                updates[current.segment_id] = (
+                    current.start_frame,
+                    next_segment.start_frame - 1,
+                    "service",
+                )
+
+                i += 1
+                continue
+
+            # ---------------------------------------------------------
+            # CASE 2:
+            #
+            # service -> play
+            #
+            # Extend the service to the frame immediately before play.
+            #
+            # The play segment remains completely untouched.
+            # ---------------------------------------------------------
+
+            if (
+                    current.state == "service"
+                    and next_segment.state == "play"
+            ):
+                updates[current.segment_id] = (
+                    current.start_frame,
+                    next_segment.start_frame - 1,
+                    "service",
+                )
+
+                i += 1
+                continue
+
+            # ---------------------------------------------------------
+            # CASE 3:
+            #
+            # play -> play
+            #
+            # Merge the second play into the first.
+            #
+            # First play:
+            #
+            #     original start  -> preserved
+            #
+            # Second play:
+            #
+            #     original end    -> preserved as the base end
+            #
+            # Then extend the merged play by min_gap_allowed - 1.
+            # ---------------------------------------------------------
+
+            if (
+                    current.state == "play"
+                    and next_segment.state == "play"
+            ):
+                merged_end = (
+                        next_segment.end_frame
+                        + extension_frames
+                )
+
+                updates[current.segment_id] = (
+                    current.start_frame,
+                    merged_end,
+                    "play",
+                )
+
+                # The second play has been absorbed into the first one.
+                if next_segment.segment_id is not None:
+                    delete_ids.add(next_segment.segment_id)
+
+                i += 2
+                continue
+
+            # ---------------------------------------------------------
+            # Any other transition is left untouched.
+            # ---------------------------------------------------------
+
+            i += 1
+
+        # -------------------------------------------------------------
+        # Persist all changes only AFTER the complete traversal.
+        # -------------------------------------------------------------
+
+        changed = 0
+
+        with self.Session() as session:
+
+            # Delete absorbed play segments.
+            for segment_id in delete_ids:
+                session.query(SQLAGameStateSegment).filter(
+                    SQLAGameStateSegment.id == segment_id
+                ).delete(
+                    synchronize_session=False
+                )
+
+                changed += 1
+
+            # Apply all collected updates.
+            for segment_id, (start_frame, end_frame, state) in updates.items():
+
+                # A segment scheduled for deletion must never be updated.
+                if segment_id in delete_ids:
+                    continue
+
+                record = session.get(
+                    SQLAGameStateSegment,
+                    segment_id,
+                )
+
+                if record is None:
+                    continue
+
+                record.start_frame = start_frame
+                record.end_frame = end_frame
+                record.state = state
+
+                changed += 1
+
+            session.commit()
+
+        return changed
