@@ -237,18 +237,6 @@ class BatchInferenceDialog(QDialog):
         layout.addWidget(self.filter_court_cb)
 
         # --------------------------------------------------
-        # Target job
-        # --------------------------------------------------
-        layout.addSpacing(10)
-
-        layer_title = QLabel("Target layers")
-        layout.addWidget(layer_title)
-
-        layout.addWidget(QLabel("Players model → Players layer"))
-        layout.addWidget(QLabel("Ball model → Ball layer"))
-        layout.addWidget(QLabel("Actions model → Actions layer"))
-
-        # --------------------------------------------------
         # Frames
         # --------------------------------------------------
 
@@ -258,7 +246,7 @@ class BatchInferenceDialog(QDialog):
         layout.addWidget(frames_title)
 
         self.all_frames_cb = QCheckBox("Annotate all frames")
-        self.all_frames_cb.setChecked(True)
+        self.all_frames_cb.setChecked(False)
         self.all_frames_cb.toggled.connect(self.on_all_frames_changed)
         layout.addWidget(self.all_frames_cb)
 
