@@ -185,7 +185,6 @@ class YOLOExportDialog(QDialog):
     """
 
     LAYERS = [
-        "court",
         "players",
         "ball",
         "actions",

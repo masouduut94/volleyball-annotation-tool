@@ -70,7 +70,7 @@ class BatchInferenceWorker(QObject):
         self._cancel_requested = True
 
     def run(self):
-        stats = {"frames": 0, "imported": 0, "skipped": 0}
+        stats = {"frames": 0, "imported": 0, "skipped": 0, "court_missing": False}
         total = len(self.frame_numbers)
         try:
             def on_progress(done, tot):
@@ -371,20 +371,20 @@ class BatchInferenceDialog(QDialog):
 
     def _update_filter_court_enabled(self, *_):
         path, _, _ = self.main_window.current_media_info()
-        has_court = bool(path) and bool(self.db.get_media_court_polygon(path))
+        has_court = bool(path) and self.db.has_court_calibration(path)
 
-        enabled = self.players_cb.isChecked() and has_court
-        self.filter_court_cb.setEnabled(enabled)
+        self.filter_court_cb.setEnabled(self.players_cb.isChecked() and has_court)
 
         if not has_court:
             self.filter_court_cb.setChecked(False)
             self.filter_court_cb.setToolTip(
-                "No court has been published for this media yet — draw the "
-                "court layer and use \"Publish court coordinates\" first."
+                "This media has no court calibration yet. Open the "
+                "\"Court Calibration\" tab, draw the full court and save."
             )
         else:
             self.filter_court_cb.setToolTip(
-                "Drop player detections whose feet fall outside the court."
+                "Drop player detections whose feet fall outside the "
+                "calibrated full-court polygon."
             )
 
     def on_auto_batch_toggled(self, checked):
@@ -593,9 +593,11 @@ class BatchInferenceDialog(QDialog):
         if stats["skipped"]:
             msg += f"\nSkipped (already had unreviewed AI annotations or exact duplicates): {stats['skipped']}"
 
-        QMessageBox.information(self, "Batch inference complete", msg)
-        self.main_window.load_annotations()
+        if stats.get("court_missing"):
+            msg += ("\n\nNote: court filtering was requested but this media "
+                    "has no court calibration, so nothing was filtered.")
 
+        QMessageBox.information(self, "Batch inference complete", msg)
         self.main_window.load_annotations()
 
     def on_cancelled(self):

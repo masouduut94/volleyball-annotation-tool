@@ -15,6 +15,7 @@ from graphics_scene import AnnotationScene, ToolMode
 
 from database.db import DatabaseManager
 from database.data import Annotation, Layer
+from database.court_calibration import CALIBRATION_STEPS
 
 from services.auto_annotator import AutoAnnotator
 from services.game_state_worker import GameStateWorker
@@ -90,16 +91,16 @@ class MainWindow(QMainWindow):
         self.original_width = 960
         self.original_height = 540
 
-        self.current_layer = "court"
-        self.current_label = "net"
+        self.current_layer = "ball"
+        self.current_label = "ball"
 
         self.visible_layers = {
-            "court": True,
             "players": True,
             "ball": True,
             "actions": True,
         }
 
+        self._calibration_active = False
         self._tag_pending_start = None
         self._tag_pending_state = None
         self._layer_dirty = False
@@ -135,6 +136,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+1"), self, activated=self.cycle_layer)
         QShortcut(QKeySequence("Alt+2"), self, activated=self.cycle_frame_label)
         QShortcut(QKeySequence("Alt+3"), self, activated=self.cycle_video_label)
+        QShortcut(QKeySequence("Return"), self, activated=self.finish_calibration_shape)
+        QShortcut(QKeySequence("Enter"), self, activated=self.finish_calibration_shape)
 
         # Right sidebar
         QShortcut(QKeySequence("K"), self, activated=self.detect_keypoints_for_selection)
@@ -153,9 +156,8 @@ class MainWindow(QMainWindow):
         self.scene.annotation_changed.connect(self.refresh_frame_confirmation_indicator)
         self.scene.annotation_changed.connect(self._mark_layer_dirty)
 
-        # Refresh the confirmation bar any time annotations change
-        # (manual edit/delete or AI import) while this frame is open.
-        self.scene.annotation_changed.connect(self.refresh_frame_confirmation_indicator)
+        self.scene.calibration.on_changed = self._refresh_calibration_status
+        self.scene.calibration.on_step_completed = self._on_calibration_step_completed
 
         self.top_toolbar = TopToolbar(self)
         self.addToolBar(self.top_toolbar)
@@ -225,9 +227,12 @@ class MainWindow(QMainWindow):
         self.left_toolbar.videoMarkEndRequested.connect(self.tag_mark_end)
         self.left_toolbar.videoCancelRequested.connect(self.tag_cancel)
 
-        self.left_toolbar.publishCourtCoordinatesRequested.connect(
-            self.publish_court_coordinates
-        )
+        self.left_toolbar.calibrationModeChanged.connect(self.on_calibration_mode_changed)
+        self.left_toolbar.calibrationStepSelected.connect(self.on_calibration_step_selected)
+        self.left_toolbar.calibrationClearStepRequested.connect(self.on_calibration_clear_step)
+        self.left_toolbar.calibrationClearAllRequested.connect(self.on_calibration_clear_all)
+        self.left_toolbar.calibrationSaveRequested.connect(self.save_calibration)
+        self.left_toolbar.calibrationUndoPointRequested.connect(self.on_calibration_undo_point)
 
         self.deactivate_tools()
 
@@ -271,6 +276,8 @@ class MainWindow(QMainWindow):
         if path is None:
             return
         layer = self.db.get_layer(layer_name)
+        if layer is None:
+            return
         self.db.confirm_frame(path, layer.layer_id, frame)
         self.refresh_frame_confirmation_indicator()
 
@@ -333,10 +340,12 @@ class MainWindow(QMainWindow):
         self.auto_annotate(model_key)
 
     def activate_rectangle(self):
+        if self._calibration_active: return
         self.left_toolbar.sync_tool_visuals("rectangle")
         self.scene.set_tool(ToolMode.RECTANGLE)
 
     def activate_polygon(self):
+        if self._calibration_active: return
         self.left_toolbar.sync_tool_visuals("polygon")
         self.scene.set_tool(ToolMode.POLYGON)
 
@@ -349,12 +358,15 @@ class MainWindow(QMainWindow):
             self.left_toolbar.clear_tool_selection()
 
     def cycle_layer(self):
+        if self._calibration_active: return
         self.left_toolbar.cycle_layer()
 
     def cycle_frame_label(self):
+        if self._calibration_active: return
         self.left_toolbar.cycle_frame_label()
 
     def cycle_video_label(self):
+        if self._calibration_active: return
         self.left_toolbar.cycle_video_label()
 
     def open_database_management(self):
@@ -391,7 +403,8 @@ class MainWindow(QMainWindow):
         self.load_current_image()
 
     def load_current_image(self):
-        self._autosave_current_layer()  # NEW
+        self._autosave_current_layer()
+        self._autosave_calibration()
 
         if not self.image_paths:
             return
@@ -411,6 +424,8 @@ class MainWindow(QMainWindow):
         self.scene.set_image(QPixmap.fromImage(qimage))
         self.scene.set_image_scale(self.original_width, self.original_height)
         self.scene.set_media_context(path, "image", None)
+        if self._calibration_active:
+            self._sync_calibration_to_media()
         self._update_media_name_label()
         self.view.fit_image()
 
@@ -467,6 +482,7 @@ class MainWindow(QMainWindow):
 
     def goto_frame(self, frame_number):
         self._autosave_current_layer()
+        self._autosave_calibration()
 
         frame = self.get_frame_by_number(frame_number)
         if frame is None:
@@ -482,6 +498,8 @@ class MainWindow(QMainWindow):
         self.scene.set_image(QPixmap.fromImage(qimage))
         self.scene.set_image_scale(self.original_width, self.original_height)
         self.scene.set_media_context(self.video_path, "video", frame_number)
+        if self._calibration_active:
+            self._sync_calibration_to_media()
         self._update_media_name_label()
         self.view.fit_image()
         self.load_annotations()
@@ -566,6 +584,8 @@ class MainWindow(QMainWindow):
         return None, None, None
 
     def save_annotations(self):
+        if self._calibration_active:
+            return
         path, media_type, frame = self.current_media_info()
         layer = self.db.get_layer(self.current_layer)
 
@@ -689,11 +709,13 @@ class MainWindow(QMainWindow):
             self.deactivate_tools()
 
     def set_tool_to_none(self):
+        if self._calibration_active: return
         self.left_toolbar.set_tool("none")
         self.scene.cancel_polygon()
         self.scene.set_tool(ToolMode.NONE)
 
     def clear_current_frame_annotations(self):
+        if self._calibration_active: return
         path, media_type, frame = self.current_media_info()
         if path is None:
             return
@@ -722,9 +744,11 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------
 
     def undo(self):
+        if self._calibration_active: return
         self.scene.undo_stack.undo()
 
     def redo(self):
+        if self._calibration_active: return
         self.scene.undo_stack.redo()
 
     def auto_annotate(self, model_key):
@@ -761,6 +785,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def confirm_current_frame(self):
+        if self._calibration_active: return
         path, media_type, frame = self.current_media_info()
         if path is None:
             return
@@ -777,7 +802,6 @@ class MainWindow(QMainWindow):
         statuses = self.db.get_frame_layer_statuses(path, frame)
         self.right_sidebar.set_annotation_statuses(statuses)
 
-        self._refresh_publish_court_button(path, frame)
 
     def run_batch_inference_on_frame(self, frame_number, model_keys, mode="replace"):
         imported_total = 0
@@ -820,11 +844,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._autosave_calibration()
+
         # If the dialog is already open (or just minimized/hidden with a job
         # running), bring the SAME instance back to front instead of creating
         # a second one — the running job's thread is tied to this specific
         # dialog object.
         if self._batch_dialog is not None:
+            self._batch_dialog._update_filter_court_enabled()
             self._batch_dialog.show()
             self._batch_dialog.raise_()
             self._batch_dialog.activateWindow()
@@ -1445,6 +1472,7 @@ class MainWindow(QMainWindow):
         this exists purely to visualize what the pose model sees (e.g.
         for future leg-position -> court-location work), not to annotate.
         """
+        if self._calibration_active: return
         if self.original_frame is None:
             QMessageBox.warning(self, "No Frame", "Please load an image or video first.")
             return
@@ -1559,6 +1587,14 @@ class MainWindow(QMainWindow):
         if path is None:
             return stats
 
+        court_polygon_np = None
+        if filter_players_outside_court and "players" in model_keys:
+            polygon = self.db.get_media_court_polygon(path)
+            if polygon:
+                court_polygon_np = np.array(polygon, dtype=np.float64)
+            else:
+                stats["court_missing"] = True  # dialog can warn the user
+
         # Decode the whole job's frame set ONCE, up front, via a private
         # capture — never self.cap. This is what makes it safe for the user
         # to scrub/play the video on the GUI thread while this job runs on
@@ -1636,8 +1672,10 @@ class MainWindow(QMainWindow):
                             result, layer, path, fn
                         )
 
-                        if model_key == "players" and filter_players_outside_court:
-                            annotations = self._filter_annotations_outside_court(annotations, path)
+                        if model_key == "players" and court_polygon_np is not None:
+                            annotations = self._filter_annotations_outside_court(
+                                annotations, court_polygon_np
+                            )
 
                         if not annotations:
                             stats["frames"] += 1
@@ -1727,23 +1765,13 @@ class MainWindow(QMainWindow):
 
         return annotations, len(annotations)
 
-    def _filter_annotations_outside_court(self, annotations, path):
-        """
-        Drops annotations whose foot point falls outside this media's
-        cached court polygon. Batches every annotation's foot point into
-        one array and tests them all in a single numba call, instead of
-        calling cv2.pointPolygonTest once per annotation in a Python loop.
-        """
+    def _filter_annotations_outside_court(self, annotations, polygon_np):
+        """Drop annotations whose foot point is outside the calibrated
+        full-court polygon (4 corners from Court Calibration)."""
         if not annotations:
             return annotations
 
-        polygon = self.db.get_media_court_polygon(path)
-        if not polygon:
-            return annotations
-
-        polygon_np = np.array(polygon, dtype=np.float64)
         feet = np.empty((len(annotations), 2), dtype=np.float64)
-
         for i, ann in enumerate(annotations):
             geom = ann.geometry
             if ann.shape_type == "rectangle":
@@ -1751,151 +1779,16 @@ class MainWindow(QMainWindow):
                 feet[i, 1] = geom["y"] + geom["height"]
             else:
                 max_y = max(p[1] for p in geom)
-                bottom_pts = [p for p in geom if p[1] == max_y]
-                feet[i, 0] = sum(p[0] for p in bottom_pts) / len(bottom_pts)
+                bottom = [p for p in geom if p[1] == max_y]
+                feet[i, 0] = sum(p[0] for p in bottom) / len(bottom)
                 feet[i, 1] = max_y
 
-        inside_mask = points_inside_polygon(feet, polygon_np)
-        return [ann for ann, inside in zip(annotations, inside_mask) if inside]
+        inside = points_inside_polygon(feet, polygon_np)
+        return [a for a, ok in zip(annotations, inside) if ok]
 
     # ---------------------------------------------------------
     # Bulk court propagation
     # ---------------------------------------------------------
-
-    def _refresh_publish_court_button(self, path, frame):
-        """Enable only when every precondition is met, and put the reason
-        in the tooltip instead of a failure MessageBox after a click."""
-        tab = self.left_toolbar.frame_tab
-
-        if self.video_path is None:
-            tab.set_publish_court_enabled(
-                False, "Only available for a loaded video."
-            )
-            return
-
-        if frame is None:
-            tab.set_publish_court_enabled(False, "No frame selected.")
-            return
-
-        if not self.db.get_court_annotations(path, frame):
-            tab.set_publish_court_enabled(
-                False,
-                "This frame has no court annotations to copy. Draw at "
-                "least one court shape first, then hit Save.",
-            )
-            return
-
-        if not self.db.get_game_on_frames(path):
-            tab.set_publish_court_enabled(
-                False,
-                "This video has no Service or In-Play tags — tag some "
-                "segments on the timeline first.",
-            )
-            return
-
-        tab.set_publish_court_enabled(
-            True,
-            "Copy this frame's court annotations to every Service / "
-            "In-Play frame of this video.",
-        )
-
-    def publish_court_coordinates(self):
-        path, media_type, frame = self.current_media_info()
-
-        # Defensive re-check — the button shouldn't be clickable if any
-        # of these fail, but the user may have hit Save / Undo between
-        # the last refresh and the click.
-        if path is None or self.video_path is None or frame is None:
-            return
-
-        source = self.db.get_court_annotations(path, frame)
-        if not source:
-            QMessageBox.warning(
-                self, "No Court Annotation",
-                "This frame has no court annotations to copy.",
-            )
-            return
-
-        targets = [f for f in self.db.get_game_on_frames(path) if f != frame]
-        if not targets:
-            QMessageBox.information(
-                self, "Nothing To Do",
-                "No Service / In-Play frames to copy into (other than "
-                "the current frame).",
-            )
-            return
-
-        existing = self.db.count_frames_with_court_annotations(path, targets)
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Publish Court Coordinates")
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setText(
-            f"Copy {len(source)} court shape(s) from frame {frame} "
-            f"to {len(targets)} Service / In-Play frame(s)?"
-        )
-        msg.setInformativeText(
-            f"Target range: frames {targets[0]}–{targets[-1]}\n"
-            + (
-                f"{existing} of those frames already have court annotations."
-                if existing else
-                "None of those frames currently have court annotations."
-            )
-        )
-
-        # Three-way choice: replace, skip, cancel. Mapped onto Qt's
-        # standard buttons so the labels stay native per platform.
-        replace_btn = msg.addButton(
-            "Replace Existing", QMessageBox.ButtonRole.DestructiveRole,
-        )
-        skip_btn = msg.addButton(
-            "Skip Existing", QMessageBox.ButtonRole.AcceptRole,
-        )
-        msg.addButton(QMessageBox.StandardButton.Cancel)
-
-        if existing == 0:
-            # No conflict — collapse to a plain Copy/Cancel prompt so
-            # the user isn't asked to reason about a mode that can't matter.
-            replace_btn.setText("Copy")
-            skip_btn.setVisible(False)
-
-        msg.setDefaultButton(skip_btn if existing else replace_btn)
-        msg.exec()
-
-        clicked = msg.clickedButton()
-        if clicked is not replace_btn and clicked is not skip_btn:
-            return
-
-        mode = "replace" if clicked is replace_btn else "skip_existing"
-
-        stats = self.db.copy_court_annotations_to_frames(
-            media_path=path,
-            media_type=media_type,
-            width=self.original_width,
-            height=self.original_height,
-            source_frame=frame,
-            target_frames=targets,
-            mode=mode,
-        )
-
-        # Current frame was not touched, but the per-layer status for
-        # it may need refreshing if the source had been unconfirmed.
-        self.refresh_frame_confirmation_indicator()
-
-        summary = (
-            f"✅ Copied {stats['copied']} court annotation(s) across "
-            f"{stats['frames_written']} frame(s)."
-        )
-        if stats["frames_skipped"]:
-            summary += (
-                f"\nSkipped {stats['frames_skipped']} frame(s) that "
-                f"already had court data."
-            )
-        summary += (
-            "\n\nCopied rows are marked unconfirmed — review them on the "
-            "frames that matter before exporting."
-        )
-        information_box(self, message=summary)
 
     def _extract_frames_to_disk_cache(self, frame_numbers, cache_dir, cancel_check=None):
         """
@@ -1945,4 +1838,114 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._autosave_current_layer()
+        self._autosave_calibration()
         super().closeEvent(event)
+
+    # ---------------------------------------------------------
+    # Court calibration
+    # ---------------------------------------------------------
+
+    def on_calibration_mode_changed(self, active: bool):
+        if active == self.scene.calibration_mode:
+            return
+
+        self.pause_playback()
+
+        try:
+            if active:
+                self._autosave_current_layer()
+                self.deactivate_tools()
+                self.scene.set_calibration_mode(True)
+                self._sync_calibration_to_media()
+                self.scene.calibration.set_active_step(
+                    self.left_toolbar.calibration_tab.current_step
+                )
+            else:
+                self._autosave_calibration()
+                self.scene.set_calibration_mode(False)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(
+                self, "Calibration Mode Error",
+                "Something went wrong switching calibration mode. "
+                "Check the console for the traceback.",
+            )
+
+        # Whatever happened above, mirror the scene's REAL state — this is
+        # what every other guard clause in this file checks.
+        self._calibration_active = self.scene.calibration_mode
+
+    def _sync_calibration_to_media(self):
+        """Load the DB calibration if the media changed; otherwise just
+        recreate the overlay items (set_image may have wiped them)."""
+        path, _, _ = self.current_media_info()
+        overlay = self.scene.calibration
+        if path is None:
+            overlay.load(None, None)
+            return
+        if overlay.media_path != path:
+            overlay.load(path, self.db.get_court_calibration(path))
+        else:
+            overlay.rebuild_items()
+        self._refresh_calibration_status()
+
+    def _autosave_calibration(self):
+        """Persist unsaved calibration for the media being LEFT. Uses the
+        overlay's own media_path, so call it before swapping media."""
+        overlay = self.scene.calibration
+        if not overlay.dirty or overlay.media_path is None:
+            return
+        self.db.save_court_calibration(
+            media_path=overlay.media_path,
+            media_type="video" if self.cap is not None else "image",
+            width=self.original_width,
+            height=self.original_height,
+            calibration=overlay.export(),
+        )
+        overlay.dirty = False
+
+    def save_calibration(self):
+        path, _, _ = self.current_media_info()
+        if path is None:
+            QMessageBox.warning(self, "No Media", "Please open an image or video first.")
+            return
+        self._autosave_calibration()
+        information_box(self, message="✅ Court calibration saved.")
+
+    def on_calibration_step_selected(self, key):
+        self.scene.calibration.set_active_step(key)
+
+    def on_calibration_clear_step(self, key):
+        self.scene.calibration.clear(key)
+
+    def on_calibration_clear_all(self):
+        reply = QMessageBox.question(
+            self, "Clear Calibration",
+            "Remove every calibration shape for this media?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.scene.calibration.clear_all()
+
+    def finish_calibration_shape(self):
+        if self._calibration_active:
+            self.scene.calibration.finish_active()
+
+    def _refresh_calibration_status(self):
+        self.left_toolbar.calibration_tab.set_status(self.scene.calibration.completion())
+
+    def _on_calibration_step_completed(self, key):
+        """Auto-advance to the next unfinished shape."""
+        status = self.scene.calibration.completion()
+        keys = [s.key for s in CALIBRATION_STEPS]
+        i = keys.index(key)
+        for k in keys[i + 1:] + keys[:i]:
+            if not status[k]:
+                self.left_toolbar.calibration_tab.set_active_step(k)
+                self.scene.calibration.set_active_step(k)
+                return
+
+    def on_calibration_undo_point(self, key):
+        self.scene.calibration.undo_last_point(key)

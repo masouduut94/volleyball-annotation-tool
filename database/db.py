@@ -16,121 +16,11 @@ from .schema import (
     GameStateSegment as SQLAGameStateSegment
 )
 from .data import Label, Layer, Annotation, GameStateSegment
+from .court_calibration import validate_calibration, order_polygon_clockwise
 
 GAME_ON_STATES = {"service", "play"}
 MIN_GAP_SECONDS = 3
 min_gap_allowed = 90  # frames
-
-def _line_intersection(p1, p2, p3, p4):
-    """
-    Intersection of the INFINITE line through p1,p2 with the infinite
-    line through p3,p4 (standard two-line determinant formula). Returns
-    [x, y], or None if the lines are parallel (denominator ~0) — callers
-    fall back to the original point in that case rather than crashing.
-    """
-    x1, y1 = p1
-    x2, y2 = p2
-    x3, y3 = p3
-    x4, y4 = p4
-
-    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-    if abs(denom) < 1e-9:
-        return None
-
-    px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
-    py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
-    return [px, py]
-
-
-def _net_top_endpoints(net_geometries):
-    """
-    Given the geometries stored under the "net" label (normally just
-    one shape, but every net-labeled annotation is included), returns
-    [left_point, right_point] for the net's TOP edge — the vertices
-    with the smallest y across all net shapes, sorted left-to-right by
-    x. Works whether the net was drawn as a rectangle or a polygon.
-    Returns None if there aren't at least two points to work with.
-    """
-    points = []
-    for geom in net_geometries:
-        if isinstance(geom, dict):  # rectangle: {"x", "y", "width", "height"}
-            x, y, w, h = geom["x"], geom["y"], geom["width"], geom["height"]
-            points.append((x, y))
-            points.append((x + w, y))
-        else:  # polygon: list of [x, y] pairs
-            points.extend((p[0], p[1]) for p in geom)
-
-    if len(points) < 2:
-        return None
-
-    min_y = min(p[1] for p in points)
-    # A small tolerance around the minimum y treats a slightly-tilted
-    # net (perspective) as still "the top edge" rather than requiring
-    # an exact match.
-    tolerance = 2.0
-    top_points = [p for p in points if p[1] <= min_y + tolerance]
-
-    if len(top_points) < 2:
-        top_points = sorted(points, key=lambda p: p[1])[:2]
-
-    top_points.sort(key=lambda p: p[0])  # left-to-right
-    return [list(top_points[0]), list(top_points[-1])]
-
-
-# TODO: Build a utils for dataset folder.
-def compute_full_court_polygon(back_zone_polygons, frame_width, frame_height, net_geometries=None):
-    """
-    Builds the whole-court polygon from the two back-zone shapes, same
-    as before (closest back-zone point to each image corner). Then, if
-    net geometry is available, REPLACES the two top corners with where
-    the court's left/right SIDE edges actually cross the net's top
-    line — since the back zone is usually drawn well short of the net,
-    its "closest to top corner" point is just the far end of that
-    shape, not where the court boundary truly meets the net.
-
-    Returns a 4-point polygon [top-left, bottom-left, bottom-right,
-    top-right], or None if there's nothing to build from.
-    """
-    points = [tuple(p) for poly in back_zone_polygons for p in poly]
-    if not points:
-        return None
-
-    corners = [
-        (0, 0),
-        (0, frame_height),
-        (frame_width, frame_height),
-        (frame_width, 0),
-    ]
-
-    polygon = []
-    for cx, cy in corners:
-        closest = min(points, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
-        polygon.append([closest[0], closest[1]])
-
-    top_left, bottom_left, bottom_right, top_right = polygon
-
-    if not net_geometries:
-        return polygon
-
-    net_line = _net_top_endpoints(net_geometries)
-    if net_line is None:
-        return polygon
-
-    net_left, net_right = net_line
-
-    # Each side edge is the line from the bottom corner up through the
-    # back-zone-derived top corner on the same side — extended until it
-    # crosses the net's top line. That crossing point is the real top
-    # corner of the court.
-    new_top_left = _line_intersection(bottom_left, top_left, net_left, net_right)
-    new_top_right = _line_intersection(bottom_right, top_right, net_left, net_right)
-
-    if new_top_left is not None:
-        top_left = new_top_left
-    if new_top_right is not None:
-        top_right = new_top_right
-
-    return [top_left, bottom_left, bottom_right, top_right]
 
 
 def annotation_key(ann: Annotation):
@@ -191,8 +81,21 @@ class DatabaseManager:
                 conn.execute(text("ALTER TABLE annotations ADD COLUMN track_id INTEGER"))
             if "team_id" not in existing_cols:
                 conn.execute(text("ALTER TABLE annotations ADD COLUMN team_id INTEGER"))
-            if "court_coordinates" not in media_cols:
-                conn.execute(text("ALTER TABLE media ADD COLUMN court_coordinates TEXT"))
+            if "court_calibration" not in media_cols:
+                conn.execute(text("ALTER TABLE media ADD COLUMN court_calibration TEXT"))
+
+            # One-time removal of the legacy "court" layer. Old court
+            # annotations can't be converted automatically (different
+            # structure), so they are dropped. Back up your .db first!
+            court_id = conn.execute(
+                text("SELECT id FROM layers WHERE name = 'court'")
+            ).scalar()
+            if court_id is not None:
+                p = {"i": court_id}
+                conn.execute(text("DELETE FROM frame_reviews WHERE layer_id = :i"), p)
+                conn.execute(text("DELETE FROM annotations WHERE layer_id = :i"), p)
+                conn.execute(text("DELETE FROM labels WHERE layer_id = :i"), p)
+                conn.execute(text("DELETE FROM layers WHERE id = :i"), p)
 
     def _create_default_data(self):
         with self.Session() as session:
@@ -213,11 +116,6 @@ class DatabaseManager:
                     ("player", "#27D3F5"),
                     ("libero", "#B027F5"),
                     ("referee", "ff0080"),
-                ],
-                "court": [
-                    ("net", "#4927F5"),
-                    ("attack zone", "#128DE5"),
-                    ("back zone", "#FFD814"),
                 ],
             }
 
@@ -272,6 +170,9 @@ class DatabaseManager:
                 .filter(SQLALayer.name == layer_name)
                 .first()
             )
+
+            if layer is None:
+                return None
 
             return Layer(
                 layer_id=layer.id,
@@ -436,9 +337,6 @@ class DatabaseManager:
                 )
                 session.add(record)
                 session.commit()
-
-        if layer.name == "court":
-            self.cache_court_coordinates(media_path, frame_number)
 
     def load_annotations(
             self,
@@ -616,9 +514,6 @@ class DatabaseManager:
             if media is None:
                 return
 
-            layer_row = session.get(SQLALayer, layer_id)
-            is_court_layer = bool(layer_row and layer_row.name == "court")
-
             session.query(SQLAAnnotation).filter(
                 SQLAAnnotation.media_id == media.id,
                 SQLAAnnotation.layer_id == layer_id,
@@ -646,9 +541,6 @@ class DatabaseManager:
                 review.confirmed_at = datetime.utcnow()
 
             session.commit()
-
-        if is_court_layer:
-            self.cache_court_coordinates(media_path, frame_number)
 
     def is_frame_confirmed(self, media_path: str, layer_id: int, frame_number: Optional[int]) -> bool:
         with self.Session() as session:
@@ -1123,229 +1015,6 @@ class DatabaseManager:
             ).update({"track_id": track_id, "team_id": team_id}, synchronize_session=False)
             session.commit()
 
-    # Court
-
-    def get_court_annotations(
-            self, media_path: str, frame_number: Optional[int],
-    ) -> List[Annotation]:
-        """Court-layer annotations for a single frame — the source
-        geometry used when propagating a court layout to other frames."""
-        with self.Session() as session:
-            layer = (
-                session.query(SQLALayer)
-                .filter(SQLALayer.name == "court")
-                .first()
-            )
-            if layer is None:
-                return []
-
-        return self.load_annotations(
-            media_path=media_path,
-            layer_id=layer.id,
-            frame_number=frame_number,
-        )
-
-    def get_game_on_frames(self, media_path: str) -> List[int]:
-        """Every frame inside a Service or In-Play segment, sorted and
-        de-duplicated. Empty list if the video has no game-state tags."""
-        with self.Session() as session:
-            media = session.query(Media).filter(Media.path == media_path).first()
-            if media is None:
-                return []
-
-            rows = (
-                session.query(
-                    SQLAGameStateSegment.start_frame,
-                    SQLAGameStateSegment.end_frame,
-                )
-                .filter(
-                    SQLAGameStateSegment.media_id == media.id,
-                    SQLAGameStateSegment.state.in_(GAME_ON_STATES),
-                )
-                .order_by(SQLAGameStateSegment.start_frame)
-                .all()
-            )
-
-        frames: set[int] = set()
-        for start, end in rows:
-            frames.update(range(start, end + 1))
-        return sorted(frames)
-
-    def count_frames_with_court_annotations(
-            self, media_path: str, frame_numbers: List[int],
-    ) -> int:
-        """How many of `frame_numbers` already have at least one court
-        row. Used to warn the user before a bulk overwrite."""
-        if not frame_numbers:
-            return 0
-
-        with self.Session() as session:
-            media = session.query(Media).filter(Media.path == media_path).first()
-            if media is None:
-                return 0
-
-            layer = session.query(SQLALayer).filter(SQLALayer.name == "court").first()
-            if layer is None:
-                return 0
-
-            count = (
-                session.query(func.count(func.distinct(SQLAAnnotation.frame_number)))
-                .filter(
-                    SQLAAnnotation.media_id == media.id,
-                    SQLAAnnotation.layer_id == layer.id,
-                    SQLAAnnotation.frame_number.in_(frame_numbers),
-                )
-                .scalar()
-            )
-            return int(count or 0)
-
-    def copy_court_annotations_to_frames(
-            self,
-            media_path: str,
-            media_type: str,
-            width: int,
-            height: int,
-            source_frame: Optional[int],
-            target_frames: List[int],
-            mode: str = "replace",  # "replace" | "skip_existing"
-    ) -> dict:
-        """Copy every court-layer annotation from `source_frame` to each
-        frame in `target_frames`. All work happens in one transaction.
-
-        `mode`:
-          - "replace":       overwrite court rows already on a target.
-          - "skip_existing": leave frames that already have court rows.
-
-        Returns {"copied": int, "frames_written": int, "frames_skipped": int}.
-        """
-        stats = {"copied": 0, "frames_written": 0, "frames_skipped": 0}
-
-        source = self.get_court_annotations(media_path, source_frame)
-        if not source:
-            return stats
-
-        # Never rewrite the frame the user is currently looking at.
-        targets = [f for f in target_frames if f != source_frame]
-        if not targets:
-            return stats
-
-        with self.Session() as session:
-            media = session.query(Media).filter(Media.path == media_path).first()
-            if media is None:
-                media = Media(
-                    path=media_path, media_type=media_type,
-                    width=width, height=height,
-                )
-                session.add(media)
-                session.commit()
-                session.refresh(media)
-
-            layer = session.query(SQLALayer).filter(SQLALayer.name == "court").first()
-            if layer is None:
-                return stats
-
-            if mode == "skip_existing":
-                existing_rows = (
-                    session.query(SQLAAnnotation.frame_number)
-                    .filter(
-                        SQLAAnnotation.media_id == media.id,
-                        SQLAAnnotation.layer_id == layer.id,
-                        SQLAAnnotation.frame_number.in_(targets),
-                    )
-                    .distinct()
-                    .all()
-                )
-                has_court = {fn for (fn,) in existing_rows}
-            else:
-                has_court = set()
-
-            for frame in targets:
-                if frame in has_court:
-                    stats["frames_skipped"] += 1
-                    continue
-
-                if mode == "replace":
-                    session.query(SQLAAnnotation).filter(
-                        SQLAAnnotation.media_id == media.id,
-                        SQLAAnnotation.layer_id == layer.id,
-                        SQLAAnnotation.frame_number == frame,
-                    ).delete(synchronize_session=False)
-
-                for ann in source:
-                    session.add(SQLAAnnotation(
-                        media_id=media.id,
-                        layer_id=layer.id,
-                        label_id=ann.label.label_id,
-                        frame_number=frame,
-                        shape_type=ann.shape_type,
-                        geometry=json.dumps(ann.geometry),
-                        is_ai_generated=False,  # not model output
-                        confirmed=False,  # not visually verified here
-                        track_id=ann.track_id,
-                        team_id=ann.team_id,
-                    ))
-                    stats["copied"] += 1
-
-                self._reset_frame_review(session, media.id, layer.id, frame)
-                stats["frames_written"] += 1
-
-            session.commit()
-
-        self.cache_court_coordinates(media_path, source_frame)
-
-        return stats
-
-    def cache_court_coordinates(self, media_path: str, frame_number: Optional[int]):
-        """
-        Recomputes this media's canonical court-geometry cache from the
-        court-layer annotations at `frame_number`, grouped by label name
-        ("back zone" -> "back_zone", etc.), and stores it on the Media row —
-        so any caller can get it with one Media lookup instead of a
-        per-frame annotation query.
-        """
-        court_annotations = self.get_court_annotations(media_path, frame_number)
-        if not court_annotations:
-            return
-
-        grouped: dict[str, list] = {}
-        for ann in court_annotations:
-            key = ann.label.name.replace(" ", "_")
-            grouped.setdefault(key, []).append(ann.geometry)
-
-        with self.Session() as session:
-            media = session.query(Media).filter(Media.path == media_path).first()
-            if media is None:
-                return
-            media.court_coordinates = json.dumps(grouped)
-            session.commit()
-
-    def get_media_court_coordinates(self, media_path: str) -> Optional[dict]:
-        """The cached {"back_zone": [...], "attack_zone": [...], "net": [...]}
-        dict for this media, or None if no court has been cached yet."""
-        with self.Session() as session:
-            media = session.query(Media).filter(Media.path == media_path).first()
-            if media is None or not media.court_coordinates:
-                return None
-            return json.loads(media.court_coordinates)
-
-    def get_media_court_polygon(self, media_path: str) -> Optional[list]:
-        """The whole-court polygon (see compute_full_court_polygon), built
-        from this media's cached back-zone shapes and, if drawn, the net's
-        top line. None if no court has been drawn/published for this media
-        yet."""
-        coords = self.get_media_court_coordinates(media_path)
-        if not coords or not coords.get("back_zone"):
-            return None
-
-        media = self.get_media(media_path)
-        if media is None:
-            return None
-
-        return compute_full_court_polygon(
-            coords["back_zone"], media.width, media.height,
-            net_geometries=coords.get("net"),
-        )
-
     def fill_short_game_state_gaps(
             self,
             media_path: str,
@@ -1763,3 +1432,37 @@ class DatabaseManager:
                 session.commit()
 
         return changed
+
+    # ------------------------------------------------------------------
+    # Court calibration (stored on the Media row)
+    # ------------------------------------------------------------------
+
+    def save_court_calibration(self, media_path, media_type, width, height, calibration: dict):
+        cleaned = validate_calibration(calibration)
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None:
+                media = Media(path=media_path, media_type=media_type, width=width, height=height)
+                session.add(media)
+                session.flush()
+            media.court_calibration = json.dumps(cleaned) if cleaned else None
+            session.commit()
+
+    def get_court_calibration(self, media_path: str) -> Optional[dict]:
+        with self.Session() as session:
+            media = session.query(Media).filter(Media.path == media_path).first()
+            if media is None or not media.court_calibration:
+                return None
+            return json.loads(media.court_calibration)
+
+    def has_court_calibration(self, media_path: str) -> bool:
+        cal = self.get_court_calibration(media_path)
+        return bool(cal and cal.get("court"))
+
+    def get_media_court_polygon(self, media_path: str) -> Optional[list]:
+        """The 4-corner full-court polygon (original-resolution pixels),
+        ordered around its centroid, or None if not calibrated."""
+        cal = self.get_court_calibration(media_path)
+        if not cal or not cal.get("court"):
+            return None
+        return order_polygon_clockwise(cal["court"])

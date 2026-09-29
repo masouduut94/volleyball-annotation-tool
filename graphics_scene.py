@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem, QGraphicsLineI
                              QGraphicsEllipseItem, QGraphicsTextItem, QMenu, QMessageBox, QGraphicsPathItem,
                              QWidgetAction, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget, QVBoxLayout)
 
+from ui.calibration_overlay import CalibrationOverlay
 from ui.drawing_tools import AnnotationRectItem, AnnotationPolygonItem
 from ui.undo_manager import (
     DeleteAnnotationCommand,
@@ -150,8 +151,8 @@ class AnnotationScene(QGraphicsScene):
         self.tool_mode = ToolMode.RECTANGLE
 
         # Current layer and label settings for new annotations
-        self.current_layer = "court"
-        self.current_label = "net"
+        self.current_layer = "ball"
+        self.current_label = "ball"
         self.current_color = "#00FF00"
 
         # Dictionary mapping layer names to their available labels
@@ -162,11 +163,12 @@ class AnnotationScene(QGraphicsScene):
 
         # Storage for annotation items organized by layer
         self.layer_items = {
-            "court": [],  # Court markings and lines
             "players": [],  # Player bounding boxes or segmentation masks
             "ball": [],  # Ball positions
             "actions": [],  # Action annotations (spikes, blocks, etc.)
         }
+        self.calibration = CalibrationOverlay(self)
+        self.calibration_mode = False
 
         # Rectangle drawing state
         self.start_pos: Optional[QPointF] = None  # Starting position of rectangle
@@ -221,6 +223,7 @@ class AnnotationScene(QGraphicsScene):
         self.current_layer = layer_name
 
     def set_image(self, pixmap):
+        self.calibration.detach_items()
         self.clear()
         for key, _ in self.layer_items.items():
             self.layer_items[key].clear()
@@ -239,6 +242,24 @@ class AnnotationScene(QGraphicsScene):
         self.image_item = self.addPixmap(pixmap)
         self.image_item.setZValue(-100)
         self.setSceneRect(QRectF(pixmap.rect()))
+
+    def set_calibration_mode(self, on: bool):
+        self.calibration_mode = on
+        self.cancel_polygon()
+        self.set_tool(ToolMode.NONE)
+        self._activate_top_item(None)
+        self._hide_stack_badge()
+        self.hovered_item = None
+        self.clearSelection()
+        self.clear_pose_overlay()
+
+        # Hide/show the normal annotation items so calibration is clean.
+        for records in self.layer_items.values():
+            for record in records:
+                record["item"].setVisible(not on)
+
+        self.calibration.set_active_step(self.calibration.active_key)
+        self.calibration.set_visible(on)
 
     def set_image_scale(self, original_width: int, original_height: int):
         """
@@ -293,6 +314,13 @@ class AnnotationScene(QGraphicsScene):
           let Qt's normal item flow handle selection/drag/resize
         - Left click on empty space: Start drawing based on current tool
         """
+        if self.calibration_mode:
+            if self.calibration.handle_press(event.scenePos(), event.button()):
+                event.accept()
+                return
+            QGraphicsScene.mousePressEvent(self, event)  # lets handles drag
+            return
+
         if event.button() == Qt.MouseButton.RightButton:
             if self.tool_mode == ToolMode.POLYGON and self.polygon_points:
                 self.remove_last_polygon_point()
@@ -322,6 +350,11 @@ class AnnotationScene(QGraphicsScene):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.calibration_mode:
+            self.calibration.update_draft_preview(event.scenePos())
+            QGraphicsScene.mouseMoveEvent(self, event)
+            return
+
         if self.temp_rect and self.start_pos:
             rect = QRectF(self.start_pos, event.scenePos()).normalized()
             self.temp_rect.setRect(rect)
@@ -359,6 +392,10 @@ class AnnotationScene(QGraphicsScene):
         """
         Handle mouse release to finish drawing operations.
         """
+        if self.calibration_mode:
+            QGraphicsScene.mouseReleaseEvent(self, event)
+            return
+
         if (
                 event.button() == Qt.MouseButton.LeftButton
                 and self.temp_rect
@@ -376,6 +413,14 @@ class AnnotationScene(QGraphicsScene):
 
         Requires at least 4 points for a valid polygon.
         """
+
+        if self.calibration_mode:
+            if self.calibration.handle_double_click(event.scenePos()):
+                event.accept()
+                return
+            QGraphicsScene.mouseDoubleClickEvent(self, event)
+            return
+
         if self.tool_mode == ToolMode.POLYGON:
             # Check if polygon has enough points
             if len(self.polygon_points) < 4:
@@ -407,6 +452,21 @@ class AnnotationScene(QGraphicsScene):
         - Escape: Cancel polygon drawing
         - Delete: Delete the currently hovered annotation
         """
+
+        if self.calibration_mode:
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                self.calibration.cancel_active_draft()
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.calibration.finish_active()
+            elif key == Qt.Key.Key_Backspace or event.matches(QKeySequence.StandardKey.Undo):
+                self.calibration.undo_last_point()
+            else:
+                QGraphicsScene.keyPressEvent(self, event)
+                return
+            event.accept()
+            return
+
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_polygon()
             self.set_tool(ToolMode.NONE)
@@ -796,6 +856,9 @@ class AnnotationScene(QGraphicsScene):
     # ---------------------------------------------------------
 
     def contextMenuEvent(self, event):
+        if self.calibration_mode:
+            return
+
         item = self._active_top_item or self._resolve_click_winner(event.scenePos())
         if item is None:
             return
@@ -1074,7 +1137,7 @@ class AnnotationScene(QGraphicsScene):
                 continue
 
             item.layer_name = ann.layer.name
-            z_values = {"court": 0, "players": 10, "ball": 20, "actions": 30}
+            z_values = {"players": 10, "ball": 20, "actions": 30}
             item.setZValue(z_values.get(layer_name, 0))
             self.addItem(item)
 

@@ -248,8 +248,8 @@ class AnnotationStatusPanel(QWidget):
     """
     confirmRequested = pyqtSignal(str)  # layer_name
 
-    LAYER_DISPLAY = {"ball": "Ball", "players": "Players", "actions": "Actions", "court": "Court"}
-    LAYER_ORDER = ["ball", "players", "actions", "court"]
+    LAYER_DISPLAY = {"ball": "Ball", "players": "Players", "actions": "Actions"}
+    LAYER_ORDER = ["ball", "players", "actions"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
