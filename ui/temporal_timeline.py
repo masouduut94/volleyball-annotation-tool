@@ -21,6 +21,7 @@ visualizes committed segments (plus a live pending-create rectangle) and
 lets you edit/delete what's already been saved.
 """
 import math
+from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
@@ -448,27 +449,59 @@ class TimelineCanvas(QWidget):
             self.seekRequested.emit(frame)
             self.update()
 
-    def next_state(self, state: str):
-        """Jump to the start of the nearest upcoming segment tagged
-        `state` (e.g. 'play' for In-Play)."""
-        frame = self.current_frame
-        candidates = [
-            s for s in self._sorted_segments()
-            if s.state == state and s.start_frame > frame
-        ]
-        if candidates:
-            self._seek(min(candidates, key=lambda s: s.start_frame).start_frame)
+    def _jump_target(self, seg, lead_in_state: Optional[str] = None) -> int:
+        """
+        Frame the playhead should land on when navigating to `seg`.
+        If a `lead_in_state` segment sits directly before it (no gap:
+        lead_in.end_frame + 1 == seg.start_frame), that segment's start;
+        otherwise seg's own start.
+        """
+        if lead_in_state is not None:
+            lead_in = next(
+                (
+                    s for s in self.segments
+                    if s.state == lead_in_state
+                       and s.end_frame == seg.start_frame - 1
+                ),
+                None,
+            )
+            if lead_in is not None:
+                return lead_in.start_frame
+        return seg.start_frame
 
-    def previous_state(self, state: str):
-        """Jump to the start of the nearest preceding segment tagged
-        `state`."""
+    def next_state(self, state: str, lead_in_state: Optional[str] = None):
+        """
+        Jump to the nearest upcoming `state` segment (or its adjacent lead-in).
+
+        Candidates are compared by their JUMP DESTINATION, not their own start,
+        and a destination must be strictly after the playhead. So when the
+        playhead already sits on a lead-in segment's start (or anywhere inside
+        the lead-in / the segment itself), that rally's destination is not
+        "ahead" anymore and the jump goes on to the next rally instead of
+        re-landing on the same frame.
+        """
+        frame = self.current_frame
+        upcoming = [
+            self._jump_target(s, lead_in_state)
+            for s in self.segments
+            if s.state == state
+        ]
+        upcoming = [t for t in upcoming if t > frame]
+        if upcoming:
+            self._seek(min(upcoming))
+
+    def previous_state(self, state: str, lead_in_state: Optional[str] = None):
+        """Same behavior as before, now using the shared _jump_target helper."""
         frame = self.current_frame
         candidates = [
             s for s in self._sorted_segments()
             if s.state == state and s.end_frame < frame
         ]
-        if candidates:
-            self._seek(max(candidates, key=lambda s: s.end_frame).start_frame)
+        if not candidates:
+            return
+
+        target = max(candidates, key=lambda s: s.end_frame)
+        self._seek(self._jump_target(target, lead_in_state))
 
 
 class TemporalTimelinePanel(QWidget):

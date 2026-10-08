@@ -8,7 +8,7 @@ from typing import Optional
 from PyQt6.QtCore import QTimer, QPointF, Qt
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog,
-                             QDialog, QMessageBox, QLabel)
+                             QDialog, QMessageBox, QLabel, QApplication)
 
 from graphics_view import GraphicsView
 from graphics_scene import AnnotationScene, ToolMode
@@ -115,8 +115,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Q"), self, activated=self.previous_15)
         QShortcut(QKeySequence("E"), self, activated=self.next_15)
         QShortcut(QKeySequence("Space"), self, activated=self.toggle_playback)
-        QShortcut(QKeySequence("Shift+D"), self, activated=lambda: self.timeline_panel.canvas.next_state("play"))
-        QShortcut(QKeySequence("Shift+A"), self, activated=lambda: self.timeline_panel.canvas.previous_state("play"))
+        QShortcut(QKeySequence("Shift+D"), self, activated=lambda: self.timeline_panel.canvas.next_state("play", lead_in_state='service'))
+        QShortcut(QKeySequence("Shift+A"), self, activated=lambda: self.timeline_panel.canvas.previous_state("play", lead_in_state='service'))
 
         # Top toolbar
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_annotations)
@@ -1002,7 +1002,8 @@ class MainWindow(QMainWindow):
             return
 
         if not self.game_state_classifier.is_configured():
-            QMessageBox.warning(self, "Model Not Configured", "Please set the Game State model path first.")
+            QMessageBox.warning(self, "Model Not Configured",
+                                "Please select the game-state checkpoint (.pt) first.")
             self.set_model_path("game_state")
             if not self.game_state_classifier.is_configured():
                 return
@@ -1010,6 +1011,7 @@ class MainWindow(QMainWindow):
         dialog = GameStateRangeDialog(
             max_frame=self.total_frames - 1,
             current_frame=self.bottom_toolbar.get_current_frame(),
+            default_window=int(round(self.video_fps)),  # ~1 s blocks, as trained
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1017,8 +1019,8 @@ class MainWindow(QMainWindow):
 
         settings = dialog.get_settings()
 
-        # NEW — warn before an AI classification run would overwrite
-        # existing tagged data anywhere in the requested range.
+        # Warn before an AI classification run would overwrite existing tagged
+        # data anywhere in the requested range.
         self._game_state_min_gap_seconds = settings["min_gap_seconds"]
         overlapping = self.db.get_segments_overlapping_range(
             self.video_path, settings["start_frame"], settings["end_frame"],
@@ -1066,6 +1068,7 @@ class MainWindow(QMainWindow):
             start_frame=settings["start_frame"],
             end_frame=settings["end_frame"],
             window_size=settings["window_size"],
+            batch_size=settings["batch_size"],
         )
 
         worker.progress.connect(
@@ -1074,27 +1077,6 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # self.game_state_worker.moveToThread(self.game_state_thread)
-        #
-        # self.game_state_thread.started.connect(self.game_state_worker.run)
-        # self.game_state_worker.progress.connect(
-        #     lambda done, total: self.game_state_progress_dialog.set_progress(
-        #         int(done / max(total, 1) * 100), detail=f"window {done}/{total}"
-        #     )
-        # )
-        # self.game_state_progress_dialog.cancel_button.clicked.connect(self.game_state_worker.cancel)
-        # self.game_state_worker.finished.connect(self._game_state_finished)
-        # self.game_state_worker.cancelled.connect(self._game_state_cancelled)
-        # self.game_state_worker.error.connect(self._game_state_error)
-        #
-        # self.game_state_worker.finished.connect(self.game_state_thread.quit)
-        # self.game_state_worker.cancelled.connect(self.game_state_thread.quit)
-        # self.game_state_worker.error.connect(self.game_state_thread.quit)
-        # self.game_state_thread.finished.connect(self.game_state_worker.deleteLater)
-        # self.game_state_thread.finished.connect(self.game_state_thread.deleteLater)
-
-        # self.game_state_progress_dialog.show()
-        # self.game_state_thread.start()
         self._game_state_job = run_background_job(
             parent=self,
             worker=worker,
@@ -1232,31 +1214,49 @@ class MainWindow(QMainWindow):
         }
 
     def set_model_path(self, model_key):
+        old_path = self.db.get_model_path(model_key) or ""
+
         if model_key == "game_state":
-            # Use folder dialog for game_state
-            folder_path = QFileDialog.getExistingDirectory(
+            # The game-state model is a single PyTorch checkpoint (.pt), not a
+            # folder anymore. Start the dialog next to the previous choice
+            # (works even if the old value is a legacy folder path).
+            start_dir = old_path if os.path.isdir(old_path) else os.path.dirname(old_path)
+
+            path, _ = QFileDialog.getOpenFileName(
                 self,
-                caption=f"Select {model_key} model folder",
-                directory=""
+                caption="Select game-state checkpoint (.pt)",
+                directory=start_dir,
+                filter="PyTorch checkpoint (*.pt *.pth);;All Files (*)",
             )
-            if not folder_path:
+            if not path:
                 return
 
-            path = folder_path
+            # Load it right away and only persist the path if it actually works,
+            # so a bad pick can't leave a broken path saved in the DB.
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                loaded = self.game_state_classifier.ensure_loaded(path)
+            finally:
+                QApplication.restoreOverrideCursor()
+
+            if not loaded:
+                QMessageBox.critical(
+                    self, "Could Not Load Game-State Model",
+                    "That file couldn't be loaded as a game-state checkpoint:\n\n"
+                    f"{self.game_state_classifier.last_error or 'Unknown error'}",
+                )
+                return
         else:
-            # Use file dialog for other models
             path, _ = QFileDialog.getOpenFileName(
                 self,
                 caption=f"Select {model_key} model",
-                directory="",
-                filter="Model files (*.pt *.onnx);;All Files (*)"
+                directory=os.path.dirname(old_path),
+                filter="Model files (*.pt *.onnx);;All Files (*)",
             )
             if not path:
                 return
 
         self.db.set_model_path(model_key, path)
-        if model_key == "game_state":
-            self.game_state_classifier.ensure_loaded(path)
         self.refresh_ai_sidebar()
 
     def tag_mark_start(self, state):

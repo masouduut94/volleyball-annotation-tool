@@ -16,7 +16,8 @@ class GameStateRangeDialog(QDialog):
     Configuration for a game-state classification job.
 
     Includes the minimum allowed gap used by the post-inference
-    game-state gap filling.
+    game-state gap filling, and the inference batch size (how many
+    windows are sent through the model per forward pass).
     """
 
     def __init__(
@@ -25,11 +26,12 @@ class GameStateRangeDialog(QDialog):
             current_frame=0,
             default_window=30,
             default_min_gap_seconds=2.0,
+            default_batch_size=8,
             parent=None
     ):
         super().__init__(parent)
         self.setWindowTitle("Classify Game State")
-        self.setMinimumWidth(340)
+        self.setMinimumWidth(360)
 
         layout = QVBoxLayout(self)
 
@@ -52,8 +54,12 @@ class GameStateRangeDialog(QDialog):
 
         self.window_spin = QSpinBox()
         self.window_spin.setRange(5, 300)
-        self.window_spin.setValue(default_window)
+        self.window_spin.setValue(max(5, min(300, int(default_window))))
         self.window_spin.setSuffix(" frames")
+        self.window_spin.setToolTip(
+            "Length of each classified block. ~1 second (= the video's fps) "
+            "matches how the model was trained."
+        )
 
         # Minimum gap duration used after inference.
         self.min_gap_spin = QDoubleSpinBox()
@@ -63,9 +69,20 @@ class GameStateRangeDialog(QDialog):
         self.min_gap_spin.setValue(default_min_gap_seconds)
         self.min_gap_spin.setSuffix(" seconds")
 
+        # Number of windows per forward pass.
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setRange(1, 256)
+        self.batch_spin.setValue(default_batch_size)
+        self.batch_spin.setSuffix(" windows")
+        self.batch_spin.setToolTip(
+            "Windows classified per GPU forward pass. Larger is faster but "
+            "uses more VRAM and RAM. Lower it if you get an out-of-memory error."
+        )
+
         form.addRow("Start frame", self.start_spin)
         form.addRow("End frame", self.end_spin)
         form.addRow("Window size", self.window_spin)
+        form.addRow("Batch size", self.batch_spin)
         form.addRow("Min gap", self.min_gap_spin)
 
         layout.addLayout(form)
@@ -108,5 +125,6 @@ class GameStateRangeDialog(QDialog):
             "start_frame": start,
             "end_frame": end,
             "window_size": self.window_spin.value(),
+            "batch_size": self.batch_spin.value(),
             "min_gap_seconds": self.min_gap_spin.value(),
         }

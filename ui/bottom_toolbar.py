@@ -357,7 +357,7 @@ class BottomToolbar(QWidget):
         self.prev_rally_btn = create_navigation_button(
             tooltip="Previous In-Play segment",
             icon_path="./resources/icons/bottom_toolbar/prev_rally.png",
-            callback=lambda: self.main_window.timeline_panel.canvas.previous_state("play"),
+            callback=lambda: self.main_window.timeline_panel.canvas.previous_state("play", lead_in_state='service'),
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
@@ -404,7 +404,7 @@ class BottomToolbar(QWidget):
         self.next_rally_btn = create_navigation_button(
             tooltip="Next In-Play segment",
             icon_path="./resources/icons/bottom_toolbar/next_rally.png",
-            callback=lambda: self.main_window.timeline_panel.canvas.next_state("play"),
+            callback=lambda: self.main_window.timeline_panel.canvas.next_state("play", lead_in_state='service'),
             object_name="navigationButton",
             icon_size=self.ICON_SIZE,
         )
